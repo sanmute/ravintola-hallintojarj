@@ -1,0 +1,2334 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ruokalistasuunnittelija</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; font-family:'Segoe UI', Arial, sans-serif; }
+  body { background:#f0f2f5; color:#2c3e50; }
+  header { background:#1a5c3a; color:#fff; padding:18px 30px; }
+  header h1 { font-size:22px; font-weight:600; }
+  header p { font-size:13px; opacity:.85; margin-top:2px; }
+  nav { background:#fff; border-bottom:2px solid #e0e0e0; padding:0 30px; display:flex; gap:4px; }
+  nav button { background:none; border:none; padding:14px 22px; font-size:15px; cursor:pointer;
+               border-bottom:3px solid transparent; color:#666; }
+  nav button.active { color:#1a5c3a; border-bottom-color:#1a5c3a; font-weight:600; }
+  nav button:hover { background:#f5f5f5; }
+  main { padding:25px 30px; max-width:1300px; margin:0 auto; }
+  .tab { display:none; } .tab.active { display:block; }
+  .card { background:#fff; border-radius:8px; padding:20px; margin-bottom:18px;
+          box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  .card h2 { font-size:17px; margin-bottom:14px; color:#1a5c3a; }
+  .list-jump { position:fixed; right:22px; bottom:22px; z-index:20; display:flex; gap:8px;
+               padding:8px; background:rgba(255,255,255,.94); border-radius:9px;
+               box-shadow:0 2px 10px rgba(0,0,0,.18); }
+  .list-jump .btn { margin:0; white-space:nowrap; }
+  @media (max-width:600px) { .list-jump { right:10px; bottom:10px; } .list-jump .btn { padding:8px; font-size:12px; } }
+  label { display:block; font-size:13px; font-weight:600; margin:10px 0 4px; }
+  input, select, textarea { width:100%; padding:9px 11px; border:1px solid #ccc; border-radius:5px;
+                            font-size:14px; }
+  .row { display:flex; gap:14px; flex-wrap:wrap; } .row > div { flex:1; min-width:160px; }
+  button.btn { background:#1a5c3a; color:#fff; border:none; padding:10px 20px; border-radius:5px;
+               font-size:14px; cursor:pointer; margin-top:12px; }
+  button.btn:hover { background:#14492e; }
+  button.btn.secondary { background:#fff; color:#1a5c3a; border:1px solid #1a5c3a; }
+  button.btn.danger { background:#c0392b; }
+  button.btn.small { padding:5px 12px; font-size:12px; margin:0; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th { text-align:left; padding:9px 10px; background:#f7f9f8; border-bottom:2px solid #e0e0e0;
+       font-size:12px; text-transform:uppercase; letter-spacing:.4px; color:#555; }
+  td { padding:8px 10px; border-bottom:1px solid #eee; }
+  tr:hover td { background:#fafcfb; }
+  .badge { display:inline-block; padding:3px 10px; border-radius:12px; font-size:12px;
+           font-weight:600; color:#fff; }
+  .msg { padding:11px 15px; border-radius:6px; margin:12px 0; font-size:14px; display:none; }
+  .msg.ok { background:#d4edda; color:#155724; display:block; }
+  .msg.err { background:#f8d7da; color:#721c24; display:block; }
+  .stat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; }
+  .stat { background:#f7f9f8; border-radius:7px; padding:14px; text-align:center; }
+  .stat .num { font-size:26px; font-weight:700; color:#1a5c3a; }
+  .stat .lbl { font-size:12px; color:#777; margin-top:3px; }
+  /* meal plan grid */
+  .week-block { margin-bottom:22px; }
+  .week-title { font-weight:700; font-size:15px; margin-bottom:7px; }
+  .meals { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:7px; }
+  .meal { border-radius:6px; padding:8px 10px; font-size:12.5px; font-weight:600; cursor:pointer;
+          color:#222; border:1px solid rgba(0,0,0,.12); line-height:1.3; }
+  .meal:hover { outline:2px solid #1a5c3a; }
+  .meal .slot { font-size:10px; opacity:.65; font-weight:400; }
+  /* modal */
+  .overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:50;
+             align-items:center; justify-content:center; }
+  .overlay.open { display:flex; }
+  .modal { background:#fff; border-radius:9px; padding:24px; width:480px; max-width:92vw;
+           max-height:85vh; overflow:auto; }
+  .modal h3 { margin-bottom:12px; font-size:16px; color:#1a5c3a; }
+  .pagination { margin-top:12px; display:flex; gap:6px; flex-wrap:wrap; }
+  .pagination button { padding:5px 11px; border:1px solid #ccc; background:#fff; border-radius:4px;
+                       cursor:pointer; font-size:13px; }
+  .pagination button.cur { background:#1a5c3a; color:#fff; border-color:#1a5c3a; }
+  .hint { font-size:12.5px; color:#777; margin-top:6px; }
+  @keyframes ocrStripes {
+  0% { background-position: 0 0; }
+  100% { background-position: 28px 0; }
+}
+.ocr-active {
+  background-image: linear-gradient(45deg,
+    rgba(255,255,255,.18) 25%, transparent 25%, transparent 50%,
+    rgba(255,255,255,.18) 50%, rgba(255,255,255,.18) 75%, transparent 75%);
+  background-size: 28px 28px;
+  animation: ocrStripes 1s linear infinite;
+}
+
+/* ---------- Help button + modal ---------- */
+#helpBtn {
+  position: fixed; right: 26px; bottom: 26px; width: 52px; height: 52px;
+  border-radius: 50%; background: #1a5c3a; color: #fff; border: none;
+  font-size: 22px; font-weight: 700; cursor: pointer; z-index: 60;
+  box-shadow: 0 3px 10px rgba(0,0,0,.25);
+}
+#helpBtn:hover { background: #14492e; }
+.help-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45);
+                z-index: 70; align-items: center; justify-content: center; }
+.help-overlay.open { display: flex; }
+.help-modal { background: #fff; border-radius: 10px; width: 70vw; max-width: 900px;
+              height: 78vh; max-height: 720px; display: flex; flex-direction: column;
+              overflow: hidden; }
+.help-header { display: flex; align-items: center; justify-content: space-between;
+               padding: 14px 20px; border-bottom: 1px solid #e0e0e0; }
+.help-header h3 { color: #1a5c3a; font-size: 17px; }
+.help-close { background: none; border: none; font-size: 22px; cursor: pointer; color: #666; line-height:1; }
+.help-close:hover { color: #222; }
+.help-search { padding: 12px 20px; border-bottom: 1px solid #e0e0e0; }
+.help-search input { width: 100%; padding: 9px 11px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; }
+.help-body { flex: 1; display: flex; overflow: hidden; }
+.help-list { width: 30%; min-width: 180px; border-right: 1px solid #e0e0e0; overflow-y: auto; }
+.help-list button { display: block; width: 100%; text-align: left; background: none; border: none;
+                     padding: 12px 16px; font-size: 13.5px; cursor: pointer; border-bottom: 1px solid #f0f0f0;
+                     color: #333; }
+.help-list button:hover { background: #f5f9f6; }
+.help-list button.active { background: #eaf5ee; color: #1a5c3a; font-weight: 600; }
+.help-list .help-empty { padding: 16px; color: #888; font-size: 13px; }
+.help-article { width: 70%; overflow-y: auto; padding: 20px 24px; }
+.help-article h2 { color: #1a5c3a; font-size: 18px; margin-bottom: 12px; }
+.help-article p { margin-bottom: 10px; line-height: 1.55; font-size: 14px; }
+.help-article ul, .help-article ol { margin: 0 0 10px 22px; font-size: 14px; line-height: 1.55; }
+.help-article img { max-width: 100%; border-radius: 6px; border: 1px solid #e0e0e0; margin: 8px 0; }
+.help-article .img-caption { font-size: 12px; color: #888; margin: -4px 0 12px; }
+.help-back { display: none; }
+
+@media (max-width: 720px) {
+  .help-modal { width: 94vw; height: 88vh; }
+  .help-body { position: relative; }
+  .help-list { width: 100%; min-width: 0; border-right: none; }
+  .help-article { width: 100%; }
+  .help-body.showing-article .help-list { display: none; }
+  .help-body:not(.showing-article) .help-article { display: none; }
+  .help-back { display: inline-block; background: none; border: none; color: #1a5c3a;
+               font-size: 13.5px; cursor: pointer; margin-bottom: 10px; padding: 0; }
+}
+
+/* ---------- Tietoa-sivu ---------- */
+.about-section { margin-bottom: 20px; }
+.about-section h3 { font-size: 15px; margin-bottom: 8px; color: #1a5c3a; }
+.about-box { border-radius: 7px; padding: 14px 16px; }
+.about-box p, .about-box li { font-size: 13.5px; line-height: 1.6; }
+.about-box.warn { background: #fff3cd; }
+.about-box.ok { background: #d4edda; }
+.about-box.danger { background: #f8d7da; }
+.about-box ol, .about-box ul { margin: 6px 0 10px 20px; }
+.about-stats { display: grid; grid-template-columns: repeat(auto-fit,minmax(160px,1fr)); gap: 10px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🍽️ Ruokalistasuunnittelija</h1>
+  <p>Reseptit → ruokalista → Excel & Kespro-tilaus</p>
+</header>
+
+<nav>
+  <button class="active" onclick="showTab('recipes', this)">📖 Reseptit</button>
+  <button onclick="showTab('scrape', this)">📥 Tuo reseptejä</button>
+  <button onclick="showTab('review', this)">✅ Tarkistusjono</button>
+  <button onclick="showTab('contribute', this)">🧑‍🍳 Oma resepti</button>
+  <button onclick="showTab('plans', this)">📅 Ruokalistat</button>
+  <button onclick="showTab('view', this)">👁️ Selaa & muokkaa</button>
+  <button onclick="showTab('catalog', this)">🛒 Tilauslista</button>
+  <button onclick="showTab('audit', this)">🔍 Raaka-aineiden tarkistus</button>
+  <button id="navHallinto" onclick="showTab('hallinto', this)" style="display:none">⚙️ Hallinto</button>
+  <button id="navHealth" onclick="showTab('health', this)" style="display:none">🏥 Terveystarkistus</button>
+  <button onclick="showTab('about', this)">ℹ️ Tietoa</button>
+</nav>
+
+<main>
+<div id="globalMsg" class="msg"></div>
+
+<!-- ============ RECIPES TAB ============ -->
+<div id="tab-recipes" class="tab active">
+  <div class="list-jump" aria-label="Recipe list jump controls">
+    <button class="btn small secondary" onclick="jumpToTabStart('tab-recipes')">↑ Alkuun</button>
+    <button class="btn small" onclick="jumpToTabEnd('tab-recipes')">↓ Loppuun</button>
+  </div>
+  <div class="card">
+    <h2>Reseptitilanne</h2>
+    <div class="stat-grid" id="statGrid"></div>
+  </div>
+
+  <div class="card">
+    <h2>Lisää resepti käsin</h2>
+    <div class="row">
+      <div><label>Reseptin nimi *</label><input id="newName" placeholder="esim. Lohikeitto"></div>
+      <div><label>Kausi *</label>
+        <select id="newSeason">
+          {% for k, v in seasons.items() %}<option value="{{k}}">{{v}}</option>{% endfor %}
+        </select></div>
+      <div><label>Kategoria *</label>
+        <select id="newCategory">
+          {% for k, v in categories.items() %}<option value="{{k}}">{{v}}</option>{% endfor %}
+        </select></div>
+    </div>
+    <button class="btn" onclick="addRecipe()">+ Lisää resepti</button>
+    <p class="hint">Suuremmat erät: aja keräyspipeline (recipe_scraping_pipeline.py) ja käsittele tulokset Tarkistusjono-välilehdellä.</p>
+  </div>
+
+  <div class="card" style="background:#e8f5e9;">
+    <h2>✨ Uudet reseptit</h2>
+    <p class="hint" style="margin-bottom:10px;">
+      Käsin lisätyt tai muokatut reseptit — erotuksena massana tuoduista (PoweResta/OCR/verkkokaappaus),
+      joita kukaan ei ole vielä yksitellen tarkistanut. "Käytä vain uusia reseptejä" -valinta
+      Ruokalistat-välilehdellä rakentaa 52-viikon suunnitelman pelkästään näistä.
+    </p>
+    <div id="newRecipesSummary" style="margin-bottom:10px; font-weight:600;">Ladataan...</div>
+    <input type="text" id="newRecipesSearch" placeholder="Etsi uusista..." oninput="renderNewRecipes()" style="margin-bottom:10px;">
+    <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
+      <button class="btn small secondary" onclick="newRecipesSelectAll(true)">☑️ Valitse kaikki</button>
+      <button class="btn small secondary" onclick="newRecipesSelectAll(false)">☐ Tyhjennä valinnat</button>
+      <button class="btn small" onclick="exportSelectedToPoweResta()">📤 Luo PoweResta-vienti</button>
+    </div>
+    <div id="newRecipesList" style="max-height:320px; overflow-y:auto;"></div>
+  </div>
+
+  <div class="card">
+    <h2>Kaikki reseptit</h2>
+    <div class="row">
+      <div><label>Suodata kausi</label>
+        <select id="filterSeason" onchange="loadRecipes()">
+          <option value="">Kaikki kaudet</option>
+          {% for k, v in seasons.items() %}<option value="{{k}}">{{v}}</option>{% endfor %}
+        </select></div>
+    </div>
+    <div style="display:flex; gap:.6rem; align-items:center; margin-top:10px; flex-wrap:wrap;">
+      <button id="recipeSelectAllBtn" class="btn small secondary" onclick="recipeToggleSelectAll()">☐ Valitse kaikki</button>
+      <button id="recipeExportBtn" class="btn small" onclick="recipeExportSelected()" style="display:none;">📤 Vie PoweRestaan</button>
+    </div>
+    <div style="overflow-x:auto; margin-top:14px;">
+      <table>
+        <thead><tr><th style="width:30px;"></th><th>Nimi</th><th>Kausi</th><th>Kategoria</th>
+          <th style="width:110px;" title="Ei koskaan automaattisesti 52-viikon ruokalistalle — vain esihenkilö lisää käsin (esim. lisäkastikkeet)">Vain käsin</th>
+          <th style="width:230px;">Toiminnot</th></tr></thead>
+        <tbody id="recipeRows"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+
+<!-- ============ IMPORT TAB ============ -->
+<div id="tab-scrape" class="tab">
+  <div class="card">
+    <h2>1. Tuo omat reseptit (PoweResta-Excel) — suositeltu</h2>
+    <p class="hint" style="margin-bottom:10px;">
+      Tuo reseptimuuntimen tuottama PoweResta-Excel suoraan tähän järjestelmään —
+      organisaation omat ~450 reseptiä ovat paras ja täysin oma reseptilähde.
+      Ruokavaliotiedot säilyvät, kategoria ja kausi arvataan automaattisesti.
+    </p>
+    <label>PoweResta-muotoinen .xlsx-tiedosto</label>
+    <input type="file" id="powFile" accept=".xlsx">
+    <button class="btn" onclick="importPoweresta()">📥 Tuo Excel</button>
+  </div>
+
+  <div class="card">
+    <h2>2. 📄 PoweResta PDF -tuonti</h2>
+    <p class="hint" style="margin-bottom:10px;">Lataa yksi tai useampi PoweResta-reseptin PDF. Reseptit poimitaan tarkistusjonoon, jossa uudet ja päivitettävät reseptit hyväksytään erikseen.</p>
+    <div id="pdf-drop-zone" onclick="document.getElementById('pdf-file-input').click()"
+         ondrop="handlePdfDrop(event)" ondragover="handlePdfDragOver(event)" ondragleave="handlePdfDragLeave(event)"
+         style="border:2px dashed #999; padding:24px; text-align:center; border-radius:6px; cursor:pointer; background:#fff;">
+      <p style="margin:0 0 10px;">Vedä PDF-tiedostot tähän tai valitse ne tietokoneelta</p>
+      <input type="file" id="pdf-file-input" multiple accept=".pdf,application/pdf" onchange="handlePdfSelect(event)" style="display:none">
+      <button class="btn" type="button" onclick="event.stopPropagation(); document.getElementById('pdf-file-input').click()">Valitse PDF-tiedostoja</button>
+    </div>
+    <div id="pdf-upload-progress" style="display:none; margin-top:14px;">
+      <div id="pdf-progress-text" class="hint" style="margin-bottom:6px;">Käsitellään…</div>
+      <div style="width:100%; height:20px; background:#ddd; border-radius:4px; overflow:hidden"><div id="pdf-progress-bar" style="width:0%; height:100%; background:#4caf50; transition:width .3s"></div></div>
+    </div>
+    <div id="pdf-results" style="display:none; margin-top:14px; padding:12px; background:#f7f9f8; border-radius:6px;">
+      <p><strong id="pdf-results-summary"></strong></p><div id="pdf-results-list"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>2. Liitä resepti tekstinä</h2>
+    <p class="hint" style="margin-bottom:10px;">
+      Selaa reseptisivuja normaalisti ja kopioi resepti itse — liitä teksti tähän.
+      Järjestelmä tunnistaa nimen, raaka-aineet ja ohjeet. Ei automaattista hakua,
+      joten tämä toimii minkä tahansa lähteen kanssa (myös kirjat ja omat muistiinpanot).
+    </p>
+    <label>Reseptin teksti (nimi ensimmäiselle riville)</label>
+    <textarea id="pasteText" rows="8" placeholder="Kirkas lohikeitto
+1 l vettä
+2 kalaliemikuutiota
+400 g lohifileetä
+Kiehauta vesi. Lisää liemikuutiot..."></textarea>
+    <button class="btn" onclick="importPaste()">📋 Liitä jonoon</button>
+  </div>
+
+  <div class="card">
+    <h2>3. Skannatut ruokalistataulukot (OCR)</h2>
+    <p class="hint" style="margin-bottom:10px;">
+      Lataa valokuvat tai skannaukset viikkoruokalistoista (taulukko, jossa
+      viikonpäivät sarakkeina). Tekstintunnistus poimii ruoat automaattisesti —
+      kuvan suunta tunnistetaan itse, joten kännykkäkuvakin kelpaa.
+      Voit valita useita kuvia kerralla (max 60).
+    </p>
+    <label>Kuvatiedostot (JPG/PNG)</label>
+    <input type="file" id="ocrFiles" accept="image/*" multiple>
+    <label style="display:flex; align-items:center; gap:8px; margin-top:10px; font-weight:400;">
+      <input type="checkbox" id="ocrMainOnly" checked style="width:auto;">
+      Vain pääateriat (Lounas + Päivällinen) — suositeltu
+    </label>
+    <button class="btn" onclick="startOcr()">🔍 Käynnistä tekstintunnistus</button>
+    <div id="ocrProgress" style="display:none; margin-top:14px;">
+      <div style="background:#eee; border-radius:6px; overflow:hidden; height:22px; margin-bottom:8px;">
+        <div id="ocrBar" style="background:#1a5c3a; height:100%; width:0%; transition:width .4s;
+             color:#fff; font-size:12px; text-align:center; line-height:22px;"></div>
+      </div>
+      <div id="ocrSummary" class="hint" style="margin-bottom:6px;"></div>
+      <div id="ocrLog" style="font-size:13px; font-family:monospace; background:#f7f9f8;
+           border-radius:6px; padding:10px; max-height:200px; overflow:auto;"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>4. Hae osoitteesta (käytä harkiten)</h2>
+    <p class="hint" style="margin-bottom:12px; background:#fff3cd; padding:10px; border-radius:6px;">
+      ⚠️ <b>Tarkista aina lähdesivuston käyttöehdot ennen hakua.</b> Osa sivustoista
+      (esim. K-Ruoka) kieltää automaattisen haun ehdoissaan — niiltä reseptit tuodaan
+      kohdilla 1–2. Käytä tätä vain sivustoilla, joiden ehdot sen sallivat.
+    </p>
+    <label>Reseptisivujen osoitteet (yksi per rivi, max 50)</label>
+    <textarea id="scrapeUrls" rows="4" placeholder="https://esimerkkisivusto.fi/reseptit/lohikeitto"></textarea>
+    <button class="btn" id="scrapeBtn" onclick="startScrape(false)">🌐 Hae reseptit</button>
+  </div>
+
+  <div class="card">
+    <h2>Listaussivulta hakeminen</h2>
+    <p class="hint" style="margin-bottom:10px;">
+      Anna kategoriasivun osoite (esim. keittoreseptien listaus) — järjestelmä poimii sivulta reseptilinkit automaattisesti.
+    </p>
+    <div class="row">
+      <div style="flex:3;"><label>Listaussivun osoite</label>
+        <input id="scrapeListing" placeholder="https://esimerkkisivusto.fi/reseptit/keitot"></div>
+      <div><label>Max reseptejä</label>
+        <select id="scrapeLimit">
+          <option value="10">10</option>
+          <option value="20" selected>20</option>
+          <option value="30">30</option>
+          <option value="50">50</option>
+        </select></div>
+    </div>
+    <button class="btn" id="scrapeListBtn" onclick="startScrape(true)">🌐 Hae listalta</button>
+  </div>
+
+  <div class="card" id="scrapeProgress" style="display:none;">
+    <h2>Haun edistyminen</h2>
+    <div style="background:#eee; border-radius:6px; overflow:hidden; height:22px; margin-bottom:10px;">
+      <div id="scrapeBar" style="background:#1a5c3a; height:100%; width:0%; transition:width .4s;
+           color:#fff; font-size:12px; text-align:center; line-height:22px;"></div>
+    </div>
+    <div id="scrapeSummary" class="hint" style="margin-bottom:8px;"></div>
+    <div id="scrapeLog" style="font-size:13px; font-family:monospace; background:#f7f9f8;
+         border-radius:6px; padding:10px; max-height:260px; overflow:auto;"></div>
+    <button class="btn" id="scrapeGoReview" style="display:none;"
+      onclick="showTab('review', document.querySelectorAll('nav button')[2])">→ Siirry tarkistusjonoon</button>
+  </div>
+</div>
+
+<!-- ============ REVIEW TAB ============ -->
+<div id="tab-review" class="tab">
+  <div class="list-jump" aria-label="Review queue jump controls">
+    <button class="btn small secondary" onclick="jumpToTabStart('tab-review')">↑ Alkuun</button>
+    <button class="btn small" onclick="jumpToTabEnd('tab-review')">↓ Loppuun</button>
+  </div>
+  <div class="card">
+    <h2>Tarkistusjono — kerätyt reseptit</h2>
+    <p class="hint" style="margin-bottom:10px;">Tähän ilmestyvät verkosta kerätyt reseptit (recipes_for_review.json).
+       Luokittele kausi ja kategoria, poista turhat, ja vie hyväksytyt tietokantaan.</p>
+    <div id="reviewEmpty" class="hint">Jonossa ei ole reseptejä.</div>
+    <div style="overflow-x:auto;">
+      <table id="reviewTable" style="display:none;">
+        <thead><tr><th>Nimi</th><th>Lähde</th><th>Kausi</th><th>Kategoria</th><th></th></tr></thead>
+        <tbody id="reviewRows"></tbody>
+      </table>
+    </div>
+    <button class="btn" id="approveBtn" style="display:none;" onclick="approveReview()">✅ Vie hyväksytyt tietokantaan</button>
+    <div id="approveProgress" style="display:none; margin-top:14px;">
+      <div id="approveProgressText" class="hint" style="margin-bottom:6px;">Viedään tietokantaan…</div>
+      <div style="width:100%; height:20px; background:#ddd; border-radius:4px; overflow:hidden">
+        <div id="approveProgressBar" style="background:#1a5c3a; height:100%; width:0%; transition:width .3s"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ CONTRIBUTE TAB ============ -->
+<div id="tab-contribute" class="tab">
+  <div class="card">
+    <h2>🧑‍🍳 Lisää oma resepti</h2>
+    <p class="hint" style="margin-bottom:10px;">
+      Kirjoita tai liitä resepti tähän. Se odottaa esihenkilön hyväksyntää ennen kuin se
+      ilmestyy reseptilistalle ja ruokalistoihin.
+    </p>
+    <div class="row">
+      <div><label>Reseptin nimi *</label><input id="contribName" placeholder="esim. Lohikeitto"></div>
+      <div><label>Kausi *</label>
+        <select id="contribSeason">
+          {% for k, v in seasons.items() %}<option value="{{k}}">{{v}}</option>{% endfor %}
+        </select></div>
+      <div><label>Kategoria *</label>
+        <select id="contribCategory">
+          {% for k, v in categories.items() %}<option value="{{k}}">{{v}}</option>{% endfor %}
+        </select></div>
+    </div>
+    <label>Raaka-aineet</label>
+    <div style="overflow-x:auto;">
+      <table style="margin-bottom:8px;">
+        <thead><tr>
+          <th style="width:90px;">Määrä</th><th style="width:90px;">Yksikkö</th>
+          <th>Raaka-aine</th><th>Erityisohje (valinnainen)</th><th style="width:40px;"></th>
+        </tr></thead>
+        <tbody id="contribIngRows"></tbody>
+      </table>
+    </div>
+    <button class="btn small secondary" onclick="addIngRow()">+ Lisää rivi</button>
+    <label style="margin-top:16px;">Valmistusohje (valinnainen)</label>
+    <textarea id="contribInstructions" rows="6" placeholder="Kiehauta vesi. Lisää liemikuutiot..."></textarea>
+    <label>Muut huomiot (valinnainen)</label>
+    <input id="contribNotes" placeholder="esim. ruokavaliotiedot">
+    <button class="btn" onclick="submitContribution()">📤 Lähetä hyväksyttäväksi</button>
+  </div>
+
+  <div class="card" id="pendingCard" style="display:none;">
+    <h2>Hyväksyntää odottavat reseptit</h2>
+    <p class="hint" style="margin-bottom:10px;">Näkyy vain esihenkilöille (admin-rooli).</p>
+    <div style="overflow-x:auto;">
+      <table>
+        <thead><tr><th>Nimi</th><th>Kausi</th><th>Kategoria</th><th>Lisääjä</th><th>Raaka-aineet</th><th style="width:170px;"></th></tr></thead>
+        <tbody id="pendingRows"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+</div>
+
+
+<!-- ============ PLANS TAB ============ -->
+<div id="tab-plans" class="tab">
+  <div class="card">
+    <h2>Luo uusi ruokalista</h2>
+    <div class="row">
+      <div><label>Suunnitelman tyyppi</label>
+        <select id="planSeason" onchange="document.getElementById('weeksWrap').style.display = this.value==='vuosi' ? 'none' : 'block'">
+          <option value="vuosi" selected>🗓️ Koko vuosi — 4 kausiteemaa (52 vk)</option>
+          {% for k, v in seasons.items() %}{% if k != 'kaikki' %}<option value="{{k}}">Yksi kausi: {{v}}</option>{% endif %}{% endfor %}
+        </select></div>
+      <div id="weeksWrap" style="display:none;"><label>Viikkojen määrä</label>
+        <select id="planWeeks">
+          <option value="4">4 viikkoa (testikierto)</option>
+          <option value="13" selected>13 viikkoa (yksi kausi)</option>
+          <option value="26">26 viikkoa (puoli vuotta)</option>
+          <option value="52">52 viikkoa (koko vuosi)</option>
+        </select></div>
+    </div>
+    <p class="hint">Joka arkipäivälle (ma–pe) oma keitto, pääruoka ja salaatti · sama pääruoka enintään 2× / 4 vk kierto · kategoriat tasapainossa. Vuosisuunnitelma: talvi vkot 1–9 & 49–52, kevät 10–22, kesä 23–35, syksy 36–48. Ympärivuotiset reseptit ovat käytössä joka kaudella; kausireseptit vain omalla kaudellaan.</p>
+    <label style="display:block; margin:10px 0;">
+      <input type="checkbox" id="planOnlyNew" style="width:auto;">
+      Käytä vain uusia reseptejä
+    </label>
+    <button class="btn" onclick="createPlan()">🚀 Luo ruokalista</button>
+  </div>
+
+  <div class="card">
+    <h2>Olemassa olevat ruokalistat</h2>
+    <table>
+      <thead><tr><th>Nimi</th><th>Kausi</th><th>Viikot</th><th>Luotu</th><th style="width:280px;">Toiminnot</th></tr></thead>
+      <tbody id="planRows"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ============ CATALOG TAB ============ -->
+<div id="tab-catalog" class="tab">
+  <div class="card">
+    <h2>🛒 Viikon tilauslista</h2>
+    <p style="color:#666">Lista lasketaan viikon ruokalistan resepteistä.</p>
+    <div style="display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; margin-bottom:1rem">
+      <label>Viikko: <input type="number" id="katViikko" min="1" max="53" style="width:70px"></label>
+      <button class="btn" onclick="katGenerate()">🔄 Laske</button>
+      <button class="btn secondary" onclick="katExport()">📥 Excel</button>
+      <button class="btn secondary" onclick="katPrint()">🖨️ Tulosta / PDF</button>
+      <span id="katInfo" style="color:#666; font-size:0.9rem"></span>
+    </div>
+    <table id="katTable" style="width:100%; border-collapse:collapse">
+      <thead><tr style="border-bottom:2px solid #5CB85C">
+        <th style="text-align:left; padding:.4rem">Tuote</th><th style="text-align:left">Yksikkö</th>
+        <th style="text-align:left">Laskettu</th><th style="text-align:left">Tilattava</th>
+        <th style="text-align:left">Huomiot</th><th>Kerätty</th><th></th>
+      </tr></thead>
+      <tbody id="katBody"></tbody>
+    </table>
+    <div style="margin-top:1rem; display:flex; gap:.5rem; flex-wrap:wrap">
+      <input id="katUusiNimi" placeholder="Lisää tuote...">
+      <input id="katUusiMaara" type="number" step="0.1" min="0" placeholder="Määrä" style="width:90px">
+      <input id="katUusiYksikko" placeholder="kg/l/pkt" style="width:80px">
+      <button class="btn small" onclick="katAddManual()">+ Lisää</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ INGREDIENT AUDIT TAB ============ -->
+<div id="tab-audit" class="tab">
+  <div class="card">
+    <h2>🔍 Raaka-aineiden tarkistusraportti</h2>
+    <p class="hint" style="margin-bottom:14px;">
+      Reseptit, joilla ei ole vielä raaka-ainetietoja — nämä eivät näy tilauslistalla oikein.
+      Huom: reseptin alkuperäistä tuontikanavaa (PoweResta/OCR/verkko) ei tallennettu ennen tätä
+      ominaisuutta, joten vanhat reseptit näkyvät ryhmässä "Tuntematon (ennen lähdeseurantaa)".
+      Uudet tuonnit tästä eteenpäin jaotellaan oikein.
+    </p>
+
+    <div class="about-stats" id="auditSummaryStats" style="margin-bottom:20px;">Ladataan...</div>
+
+    <h3 style="font-size:14px; margin-bottom:8px;">Lähteittäin</h3>
+    <div style="overflow-x:auto; margin-bottom:20px;">
+      <table>
+        <thead><tr><th>Lähde</th><th style="text-align:center;">Yhteensä</th>
+          <th style="text-align:center;">Valmiit</th><th style="text-align:center;">Puuttuu</th>
+          <th style="text-align:center;">%</th></tr></thead>
+        <tbody id="auditBreakdownRows"></tbody>
+      </table>
+    </div>
+
+    <div class="row" style="margin-bottom:10px;">
+      <div><label>Lähde</label>
+        <select id="auditFilterSource" onchange="auditLoadMissing()">
+          <option value="">Kaikki lähteet</option>
+        </select></div>
+      <div><label>Kategoria</label>
+        <select id="auditFilterCategory" onchange="auditLoadMissing()">
+          <option value="">Kaikki kategoriat</option>
+          {% for k, v in categories.items() %}<option value="{{k}}">{{v}}</option>{% endfor %}
+        </select></div>
+      <div><label>Sesonki</label>
+        <select id="auditFilterSeason" onchange="auditLoadMissing()">
+          <option value="">Kaikki sesongit</option>
+          {% for k, v in seasons.items() %}<option value="{{k}}">{{v}}</option>{% endfor %}
+        </select></div>
+    </div>
+    <div style="display:flex; gap:.6rem; margin-bottom:16px;">
+      <button class="btn small secondary" onclick="auditResetFilters()">Nollaa suodattimet</button>
+      <button class="btn small secondary" onclick="auditExport()">📥 Vie CSV</button>
+    </div>
+
+    <h3 style="font-size:14px; margin-bottom:8px;">Reseptit ilman raaka-aineita (<span id="auditMissingCount">0</span>)</h3>
+    <div id="auditMissingList">Ladataan...</div>
+  </div>
+</div>
+
+<!-- ============ HALLINTO TAB (admin only) ============ -->
+<div id="tab-hallinto" class="tab">
+  <div class="card">
+    <h2>📦 Koko sovellus varmuuskopiona</h2>
+    <p class="hint" style="margin-bottom:10px;">
+      Lataa yksi ZIP-paketti, joka sisältää valmiin sovelluksen (.exe), nykyisen
+      tietokannan ja suomenkieliset asennus-/palautusohjeet. Toimii uudella koneella
+      ilman Pythonia tai muuta asennusta — pura ja kaksoisklikkaa .exe.
+    </p>
+    <button class="btn" onclick="downloadBackupPackage()">📦 Lataa koko sovellus varmuuskopiona</button>
+  </div>
+
+  <div class="card">
+    <h2>Varmuuskopiot</h2>
+    <p class="hint" style="margin-bottom:10px;">Tietokannan (meal_plans.db) aikaleimatut varmuuskopiot. 30 uusinta säilytetään.</p>
+    <button class="btn secondary" onclick="createBackup()">💾 Luo varmuuskopio</button>
+    <div style="overflow-x:auto; margin-top:12px;">
+      <table>
+        <thead><tr><th>Tiedosto</th><th>Koko</th><th>Luotu</th><th style="width:200px;"></th></tr></thead>
+        <tbody id="backupRows"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>🔐 Salasanan palautuskoodi</h2>
+    <p class="hint" style="margin-bottom:10px;">
+      Luo kertakäyttöinen recovery-koodi, jolla voit palauttaa oman salasanasi kirjautumissivulta,
+      jos unohdat sen. Uuden koodin luominen mitätöi aiemman. Tallenna koodi (esim. tulosta ja
+      säilytä lukitussa kaapissa) — sitä ei näytetä uudelleen.
+    </p>
+    <button class="btn secondary" onclick="generateRecoveryCode()">🔐 Luo recovery-koodi</button>
+  </div>
+
+  <div class="card">
+    <h2>🧹 Tarkista poistettavat ruokalajit</h2>
+    <p class="hint" style="margin-bottom:10px;">
+      PoweResta-tuonnissa on voinut päätyä mukaan jälkiruokia, juomia, välipaloja tai pelkkiä
+      lisäkkeitä, jotka eivät kuulu 52-viikon generaattorin pääruoka-, keitto- tai
+      salaattikiertoon. Tämä on vain lukemista ja luokittelua — mitään ei poisteta ennen kuin
+      rastitat reseptit ja painat poistonappia. Keitot ja salaatit eivät näy tässä listassa,
+      koska ne ovat jo omassa toimivassa kierrossaan.
+    </p>
+    <div id="auditRecipesSummary" style="margin-bottom:14px;">Ladataan...</div>
+    <div id="auditRecipesCategories"></div>
+    <div style="margin-top:14px; display:flex; gap:.6rem;">
+      <button class="btn secondary" onclick="auditRecipesLoad()">🔄 Lataa uudelleen</button>
+      <button class="btn danger" onclick="auditRecipesDeleteSelected()">🗑️ Poista merkityt</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ RECOVERY CODE MODAL ============ -->
+<div class="overlay" id="recoveryModal">
+  <div class="modal">
+    <h3>🔐 Recovery-koodi luotu</h3>
+    <p style="font-size:18px; font-weight:700; font-family:monospace; background:#f5f5f5;
+              padding:12px; border-radius:6px; text-align:center; letter-spacing:1px;"
+       id="recoveryCodeDisplay"></p>
+    <p style="color:#c0392b; font-weight:600; font-size:13px;">
+      ⚠️ Tätä koodia ei näytetä uudelleen. Tallenna se turvalliseen paikkaan nyt.
+    </p>
+    <div style="display:flex; gap:10px;">
+      <button class="btn small" onclick="copyRecoveryCode()">📋 Kopioi</button>
+      <button class="btn small secondary" onclick="document.getElementById('recoveryModal').classList.remove('open')">Sulje</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ HEALTH / TERVEYSTARKISTUS TAB (admin only) ============ -->
+<div id="tab-health" class="tab">
+  <div class="card">
+    <h2>🏥 Järjestelmän terveystarkistus</h2>
+
+    <div class="about-section about-box" id="healthStatusBox">
+      <div id="healthStatusContent">Ladataan...</div>
+    </div>
+
+    <div class="about-section">
+      <h3>📊 Tietokanta</h3>
+      <div class="about-stats" id="healthDatabaseContent">Ladataan...</div>
+    </div>
+
+    <div class="about-section">
+      <h3>💾 Varmuuskopiointi</h3>
+      <div id="healthBackupsContent">Ladataan...</div>
+    </div>
+
+    <div class="about-section">
+      <h3>⚠️ Tietojen laatu</h3>
+      <div id="healthQualityContent">Ladataan...</div>
+    </div>
+
+    <div class="about-section">
+      <h3>⚡ Nopeat toiminnot</h3>
+      <div style="display:flex; gap:.6rem; flex-wrap:wrap;">
+        <button class="btn" onclick="downloadBackupPackage()">📦 Lataa sovellus</button>
+        <button class="btn secondary" onclick="healthCreateBackupNow()">🔄 Varmuuskopio nyt</button>
+        <button class="btn secondary" onclick="healthRunIntegrityCheck()">🧹 Tarkista eheys</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ ABOUT / TIETOA TAB ============ -->
+<div id="tab-about" class="tab">
+  <div class="card">
+    <h2>ℹ️ Tietoa sovelluksesta</h2>
+
+    <div class="about-section">
+      <h3>Sovelluksen tiedot</h3>
+      <p><strong>RUOKALISTASUUNNITTELIJA</strong></p>
+      <p>Versio: <code>{{ app_version }}</code></p>
+      <p>Julkaisupäivä: <code>{{ app_release_date }}</code></p>
+      <p>Päivitetty: <code>{{ app_updated }}</code></p>
+      <p style="margin-top:8px;">Kehittäjä: {{ developer_name }}</p>
+      <p>Organisaatio: {{ organization }}</p>
+    </div>
+
+    <div class="about-section">
+      <h3>📊 Tilastot</h3>
+      <div class="about-stats" id="aboutStats">Ladataan...</div>
+    </div>
+
+    <div class="about-section about-box warn">
+      <h3 style="margin-top:0;">⚠️ Tunnetut rajoitukset</h3>
+      <ul>
+        <li>OCR-tuonti on hidas suurilla kuvaerillä — odota kunnes käsittely on valmis</li>
+        <li>PoweResta-tuontiin tarvitaan .xlsx-tiedostomuoto</li>
+        <li>Reseptien raaka-aineita ei haeta automaattisesti internetistä (manuaalinen lisäys tai PoweResta-tuonti)</li>
+        <li>Tilauslista saattaa näyttää "Vesi" ja muut perusainekset — suodata tai poista käsin</li>
+        <li>Suurten Excel-tiedostojen tuonti voi kestää muutaman minuutin</li>
+      </ul>
+    </div>
+
+    <div class="about-section about-box ok">
+      <h3 style="margin-top:0;">📞 Yhteystiedot</h3>
+      <p><strong>Sovelluksen kehittäjä:</strong></p>
+      <p>{{ developer_name }}<br>
+         Sähköposti: <a href="mailto:{{ developer_email }}">{{ developer_email }}</a><br>
+         Puhelin: {{ developer_phone }}</p>
+      <p style="margin-top:10px;"><strong>Organisaation IT-tuki:</strong><br>{{ it_contact }}</p>
+      <p style="margin-top:10px;"><strong>Esihenkilö (pääkäyttäjä):</strong><br>{{ admin_name }}<br>{{ admin_phone }}</p>
+    </div>
+
+    <div class="about-section about-box danger">
+      <h3 style="margin-top:0;">🚨 Hätätapaukset</h3>
+      <p><strong>Jos sovellus ei käynnisty:</strong></p>
+      <ol>
+        <li>Käynnistä kone uudelleen</li>
+        <li>Tarkista, ettei antivirus estä sovellusta</li>
+        <li>Palauta viimeisin varmuuskopio (katso "Hallinto" → "Varmuuskopiot", jos pääset kirjautumaan)</li>
+        <li>Ota yhteys kehittäjään tai IT-tukeen (ks. yllä)</li>
+      </ol>
+      <p><strong>Jos tietokanta on vioittunut:</strong></p>
+      <ol>
+        <li>Älä käynnistä sovellusta uudelleen ennen palautusta</li>
+        <li>Palauta varmuuskopioista ("Hallinto" → "Varmuuskopiot")</li>
+        <li>Jos varmuuskopiotkin puuttuvat tai ovat vioittuneet: pura viimeisin "ruokalistasuunnittelija_backup_*.zip" ja käytä sen mukana tullutta meal_plans.db-tiedostoa</li>
+        <li>Ota yhteys kehittäjään tai IT-tukeen</li>
+      </ol>
+      <p><strong>Jos salasana unohtui:</strong></p>
+      <ol>
+        <li>Jos sinulla on recovery-koodi (luodaan etukäteen "Hallinto" → "Salasanan palautuskoodi"):
+            klikkaa kirjautumissivulla "Unohditko salasanan? Käytä recovery-koodia" ja aseta uusi salasana</li>
+        <li>Jos recovery-koodia ei ole: ota yhteys kehittäjään tai IT-tukeen (ks. yllä) — salasanaa ei
+            voi nollata ilman recovery-koodia tai suoraa pääsyä palvelinkoneelle</li>
+        <li>Viimeisenä keinona: kehittäjä/IT-tuki voi ajaa palvelinkoneella paikallisesti
+            emergency_password_reset.py-skriptin tietokannan vieressä</li>
+      </ol>
+      <p><strong>Jos näet virheitä selaimessa:</strong></p>
+      <ol>
+        <li>Avaa selaimen kehittäjätyökalut (näppäin F12)</li>
+        <li>Kopioi tai kuvakaappaa virheilmoitus</li>
+        <li>Lähetä se kehittäjälle sähköpostilla</li>
+      </ol>
+    </div>
+
+    <div class="about-section">
+      <h3>⚙️ Tekniset tiedot</h3>
+      <p>
+        Sovellus: Python Flask + SQLite<br>
+        Käyttöliittymä: HTML5 + CSS + JavaScript<br>
+        Paketointityöväline: PyInstaller (Windows .exe)<br>
+        Tietokanta: SQLite (meal_plans.db)
+      </p>
+      <p class="hint" style="margin-top:8px;">
+        Miksi nämä valittiin: yksinkertainen ja stabiili, ei riipu ulkoisista palveluista,
+        toimii ilman internetyhteyttä, helppo varmuuskopioida (yksi tiedosto),
+        voidaan ottaa käyttöön ilman IT-osastoa.
+      </p>
+    </div>
+
+    <div class="about-section">
+      <h3>🗓️ Muutoshistoria</h3>
+      <p><strong>v1.0.0 ({{ app_release_date }})</strong></p>
+      <ul>
+        <li>Alustava julkaisu</li>
+        <li>Reseptien hallinta, Excel-tuonti, ruokalistat, tilauslistat</li>
+        <li>Käyttäjärooleihin perustuva kirjautuminen (admin / muokkaus / katselu)</li>
+        <li>Varmuuskopiointi ja koko sovelluksen ZIP-paketti offline-palautusta varten</li>
+        <li>Viikkomenu-generaattori (PDF/Word)</li>
+        <li>OCR-tuonti kuvista</li>
+        <li>Käyttäjien lisääminen suoraan järjestelmään (hyväksyntäjonon kautta)</li>
+        <li>Sisäänrakennettu ohje ("?" -painike)</li>
+      </ul>
+      <p class="hint" style="margin-top:8px;">Tulevat parannukset: automaattiset öiset varmuuskopiot,
+         järjestelmän terveystarkistus-kojelauta, raskaiden tuontien taustaprosessi.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============ VIEW/EDIT TAB ============ -->
+<div id="tab-view" class="tab">
+  <div class="card">
+    <h2>Selaa ja muokkaa ruokalistaa</h2>
+    <div class="row">
+      <div><label>Valitse ruokalista</label><select id="viewPlanSelect" onchange="loadPlanView()"></select></div>
+    </div>
+    <p class="hint">💡 Klikkaa mitä tahansa ateriaa vaihtaaksesi sen — esim. toimitusongelmien sattuessa. Kaikki muutokset kirjataan lokiin.</p>
+    <div class="pagination" id="weekPager"></div>
+  </div>
+  <div id="planView"></div>
+  <div class="card" id="historyCard" style="display:none;">
+    <h2>Muutosloki</h2>
+    <table>
+      <thead><tr><th>Aika</th><th>Viikko/Ateria</th><th>Vaihto</th><th>Syy</th><th>Tekijä</th></tr></thead>
+      <tbody id="historyRows"></tbody>
+    </table>
+  </div>
+</div>
+</main>
+
+<!-- ============ CHANGE MEAL MODAL ============ -->
+<div class="overlay" id="changeModal">
+  <div class="modal">
+    <h3>Vaihda ateria</h3>
+    <p id="changeCurrent" style="font-size:14px; margin-bottom:8px;"></p>
+    <label>Uusi resepti (sama kategoria)</label>
+    <select id="changeNewRecipe"></select>
+    <label>Syy vaihdolle</label>
+    <select id="changeReason">
+      <option>Toimitusongelma / raaka-ainepuute</option>
+      <option>Asiakastoive</option>
+      <option>Keittiön aikataulu</option>
+      <option>Muu syy</option>
+    </select>
+    <label>Tekijä</label>
+    <input id="changeBy" placeholder="Nimesi">
+    <div style="display:flex; gap:10px;">
+      <button class="btn" onclick="submitChange()">Vaihda</button>
+      <button class="btn secondary" onclick="closeModal()">Peruuta</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ EDIT RECIPE MODAL ============ -->
+<div class="overlay" id="editModal">
+  <div class="modal">
+    <h3>Muokkaa reseptiä</h3>
+    <input type="hidden" id="editId">
+    <label>Nimi</label><input id="editName">
+    <label>Kausi</label>
+    <select id="editSeason">
+      {% for k, v in seasons.items() %}<option value="{{k}}">{{v}}</option>{% endfor %}
+    </select>
+    <label>Kategoria</label>
+    <select id="editCategory">
+      {% for k, v in categories.items() %}<option value="{{k}}">{{v}}</option>{% endfor %}
+    </select>
+    <div style="display:flex; gap:10px;">
+      <button class="btn" onclick="saveEdit()">Tallenna</button>
+      <button class="btn secondary" onclick="document.getElementById('editModal').classList.remove('open')">Peruuta</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ RECIPE INGREDIENT EDITOR MODAL ============ -->
+<div class="overlay" id="recipeDetailModal">
+  <div class="modal" style="width:720px;">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <h3 id="rdName" style="margin-bottom:0;">Resepti</h3>
+      <button class="btn small secondary" onclick="closeRecipeDetail()">✕</button>
+    </div>
+    <p class="hint" id="rdMeta" style="margin:4px 0 14px;"></p>
+    <div id="rdNotes" class="hint" style="margin-bottom:14px;"></div>
+
+    <h4 style="font-size:14px; margin-bottom:8px;">Raaka-aineet</h4>
+    <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
+      <span id="rdServings" class="hint" style="margin:0;"></span>
+      <label style="margin:0;">Kerroin:</label>
+      <input id="rdMultiplier" type="number" step="0.25" min="0.25" value="1" style="width:80px;">
+      <button class="btn small secondary" onclick="rdApplyMultiplier()">✖ Kerro määrät</button>
+      <button class="btn small secondary" onclick="rdResetMultiplier()">↺ Nollaa</button>
+      <span id="rdMultiplierNote" class="hint" style="margin:0;"></span>
+    </div>
+    <div style="overflow-x:auto;">
+      <table style="margin-bottom:8px;">
+        <thead><tr>
+          <th>Raaka-aine</th><th style="width:90px;">Määrä</th><th style="width:80px;">Yksikkö</th>
+          <th>Erityisohje</th><th style="width:40px;"></th>
+        </tr></thead>
+        <tbody id="rdIngRows"></tbody>
+      </table>
+    </div>
+    <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:16px;">
+      <input id="rdNewName" placeholder="Uusi raaka-aine" style="flex:1; min-width:120px;">
+      <input id="rdNewQty" type="number" step="0.01" min="0" placeholder="Määrä" style="width:90px;">
+      <input id="rdNewUnit" placeholder="Yksikkö" style="width:80px;">
+      <button class="btn small" onclick="rdAddIngredient()">+ Lisää</button>
+    </div>
+
+    <h4 style="font-size:14px; margin-bottom:8px;">Muutoshistoria</h4>
+    <div id="rdHistory" style="max-height:160px; overflow-y:auto; font-size:12.5px; color:#666;"></div>
+  </div>
+</div>
+
+<!-- ============ HELP BUTTON & MODAL ============ -->
+<button id="helpBtn" onclick="openHelp()" title="Ohje" aria-label="Ohje">?</button>
+
+<div class="help-overlay" id="helpOverlay">
+  <div class="help-modal">
+    <div class="help-header">
+      <h3>Ohje</h3>
+      <button class="help-close" onclick="closeHelp()" aria-label="Sulje">✕</button>
+    </div>
+    <div class="help-search">
+      <input id="helpSearch" placeholder="Hae ohjeita..." oninput="renderHelpList()">
+    </div>
+    <div class="help-body" id="helpBody">
+      <div class="help-list" id="helpList"></div>
+      <div class="help-article" id="helpArticle"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const helpArticles = [
+  {
+    id: 'reseptit',
+    title: 'Reseptit — Reseptien hallinta',
+    keywords: ['resepti', 'haku', 'lisää', 'reseptiluettelo', 'ruokavalio', 'kausi', 'kategoria'],
+    content: `
+      <h2>Reseptit</h2>
+      <p><strong>Reseptit</strong>-välilehdellä näet koko reseptitietokannan ja voit lisätä uusia reseptejä käsin.</p>
+      <p><strong>Selaaminen:</strong> Reseptit listautuvat kausittain ja kategorioittain (kala, kana, naudanliha, kasvis). Yläosan tilastot näyttävät montako reseptiä kullakin kaudella on.</p>
+      <p><strong>Uuden reseptin lisääminen:</strong></p>
+      <ol>
+        <li>Täytä reseptin nimi, kausi ja kategoria (kaikki pakollisia).</li>
+        <li>Lisää halutessasi muita huomioita (esim. ruokavaliotiedot).</li>
+        <li>Paina "Lisää" — resepti ilmestyy suoraan reseptiluetteloon.</li>
+      </ol>
+      <p>Reseptiä voi myöhemmin muokata tai poistaa listasta. Reseptiä ei voi poistaa, jos se on käytössä jossain ruokalistassa — vaihda ensin ne kohdat toiseen reseptiin.</p>
+    `
+  },
+  {
+    id: 'tuonti',
+    title: 'Tuo reseptejä — Excel-tuonti',
+    keywords: ['excel', 'tuonti', 'poweresta', 'tiedosto', 'lataus', 'skannaus', 'ocr'],
+    content: `
+      <h2>Tuo reseptejä</h2>
+      <p>Tällä välilehdellä voit tuoda reseptejä isommissa erissä sen sijaan, että kirjoittaisit ne yksitellen.</p>
+      <p><strong>Tuettu muoto:</strong> PoweResta-ohjelmasta viety Excel-tiedosto (.xlsx). Järjestelmä tunnistaa reseptien nimet, raaka-aineet ja määrät automaattisesti tiedoston rakenteesta.</p>
+      <p><strong>Näin tuot tiedoston:</strong></p>
+      <ol>
+        <li>Valitse Excel-tiedosto koneeltasi.</li>
+        <li>Paina tuontinappia — järjestelmä lukee tiedoston läpi.</li>
+        <li>Onnistuneet reseptit siirtyvät <strong>tarkistusjonoon</strong> odottamaan hyväksyntää.</li>
+      </ol>
+      <p>Voit myös liittää reseptin tekstinä suoraan (kopioi-liitä) tai tuoda kuvattuja/skannattuja viikkomenuja OCR-tunnistuksella samalta välilehdeltä.</p>
+      <p><strong>Yleisiä ongelmia:</strong> Jos tiedostoa ei tunnisteta, tarkista että se on juuri PoweRestan vientimuodossa (sisältää "Nimi"-rivit). Jos resepti on jo tuotu aiemmin, se ohitetaan duplikaattina.</p>
+    `
+  },
+  {
+    id: 'tarkistusjono',
+    title: 'Tarkistusjono — Reseptien hyväksyntä',
+    keywords: ['tarkistusjono', 'hyväksy', 'hylkää', 'resepti', 'katselu', 'jono'],
+    content: `
+      <h2>Tarkistusjono</h2>
+      <p>Tuodut ja verkosta haetut reseptit eivät ilmesty suoraan reseptitietokantaan — ne odottavat ensin tarkistusta, jotta virheelliset tai puutteelliset tiedot voidaan korjata tai jättää pois.</p>
+      <p><strong>Reseptin tarkistaminen:</strong></p>
+      <ol>
+        <li>Käy läpi resepti kerrallaan: nimi, kausi, kategoria ja raaka-aineet.</li>
+        <li>Korjaa puuttuvat tai väärät tiedot suoraan listassa.</li>
+        <li>Poista turhat tai virheelliset rivit.</li>
+      </ol>
+      <p><strong>"Vie hyväksytyt tietokantaan"</strong> siirtää kaikki jäljellä olevat, kelvolliset reseptit (nimi + kausi + kategoria täytetty) varsinaiseen reseptitietokantaan. Sen jälkeen ne näkyvät heti Reseptit-välilehdellä ja ovat käytettävissä ruokalistoissa.</p>
+    `
+  },
+  {
+    id: 'oma-resepti',
+    title: 'Oma resepti — Henkilökunnan reseptit',
+    keywords: ['oma resepti', 'lisää resepti', 'raaka-aine', 'hyväksyntä', 'esihenkilö'],
+    content: `
+      <h2>Oma resepti</h2>
+      <p>Keittiöhenkilökunta voi lisätä omia reseptejään suoraan järjestelmään strukturoidussa muodossa — määrä, yksikkö ja raaka-aine kirjataan omiin kenttiinsä riveittäin.</p>
+      <p><strong>Reseptin lähettäminen:</strong></p>
+      <ol>
+        <li>Täytä nimi, kausi ja kategoria.</li>
+        <li>Lisää raaka-aineet riveittäin ("+ Lisää rivi" tuo uuden rivin).</li>
+        <li>Kirjoita halutessasi valmistusohje ja muut huomiot.</li>
+        <li>Paina "Lähetä hyväksyttäväksi".</li>
+      </ol>
+      <p>Resepti jää odottamaan esihenkilön (admin-roolin) hyväksyntää, eikä näy vielä reseptilistalla tai ruokalistoissa. Esihenkilö näkee odottavat reseptit saman välilehden alaosassa ja voi hyväksyä tai hylätä ne.</p>
+    `
+  },
+  {
+    id: 'ruokalistat',
+    title: 'Ruokalistat — Viikon ruoan suunnittelu',
+    keywords: ['ruokalista', 'suunnittelu', 'viikko', 'ruoka', 'lisää', 'kausi', 'vuosi'],
+    content: `
+      <h2>Ruokalistat</h2>
+      <p>Ruokalista on automaattisesti koostettu viikko- tai vuosisuunnitelma, joka valitsee reseptit tasapainoisesti kategorioiden ja kausien mukaan.</p>
+      <p><strong>Uuden ruokalistan luominen:</strong></p>
+      <ol>
+        <li>Valitse suunnitelman tyyppi: yksittäinen kausi (talvi/kevät/kesä/syksy) tai koko vuosi.</li>
+        <li>Valitse viikkomäärä (ei koske vuosisuunnitelmaa).</li>
+        <li>Paina "Luo ruokalista". Järjestelmä tarvitsee vähintään 25 reseptiä valitulle kaudelle (ympärivuotiset reseptit lasketaan mukaan joka kauteen).</li>
+      </ol>
+      <p>Valmis ruokalista näkyy listassa nimellä ja luontipäivällä. Sitä voi tarkastella ja muokata <strong>Selaa &amp; muokkaa</strong> -välilehdellä.</p>
+    `
+  },
+  {
+    id: 'selaa-muokkaa',
+    title: 'Selaa & muokkaa — Ruokalistan katselija',
+    keywords: ['muokkaa', 'vaihda', 'ateria', 'muutosloki', 'pdf', 'tilauslista', 'viikko'],
+    content: `
+      <h2>Selaa &amp; muokkaa</h2>
+      <p>Tällä välilehdellä selaat valmista ruokalistaa viikko kerrallaan ja voit tehdä muutoksia lyhyellä varoitusajalla.</p>
+      <p><strong>Viikkojen selaaminen:</strong> Valitse ruokalista ja siirry viikosta toiseen nuolilla tai viikkonumerolla.</p>
+      <p><strong>Aterian vaihtaminen:</strong> Klikkaa mitä tahansa ateriaa nähdäksesi vaihtoehdot. Järjestelmä ehdottaa saman kategorian reseptejä. Valitse uusi resepti ja anna vaihdon syy — muutos tallentuu heti.</p>
+      <p><strong>Muutosloki</strong> näyttää kaikki tähän ruokalistaan tehdyt muutokset: kuka vaihtoi, mitä ja miksi.</p>
+      <p><strong>Viikkomenu (PDF/Word)</strong> tuottaa tulostettavan viikkomenun asiakkaille tai ilmoitustaululle.</p>
+      <p><strong>Tilauslista</strong> voidaan koostaa suoraan tämän viikon resepteistä — katso tarkemmat ohjeet Tilauslista-artikkelista.</p>
+    `
+  },
+  {
+    id: 'tilauslista',
+    title: 'Tilauslista — Viikoittainen ostolista',
+    keywords: ['tilauslista', 'raaka-aine', 'määrä', 'yksikkö', 'vie', 'tulosta', 'excel', 'kerätty'],
+    content: `
+      <h2>Tilauslista</h2>
+      <p>Tilauslista on viikon ruokalistan resepteistä automaattisesti laskettu ostolista — kaikki tarvittavat raaka-aineet yhteenlaskettuina.</p>
+      <p><strong>Listan laskeminen:</strong> Valitse viikkonumero ja paina "Laske". Järjestelmä käy läpi viikon kaikki reseptit ja laskee raaka-aineiden yhteismäärät.</p>
+      <p><strong>Sarakkeet:</strong></p>
+      <ul>
+        <li><strong>Laskettu</strong> — resepteistä automaattisesti laskettu määrä.</li>
+        <li><strong>Tilattava</strong> — määrä jonka oikeasti tilaat. Voit muokata tätä, jos varastossa on jo jotain tai tarvitset enemmän.</li>
+        <li><strong>Huomiot</strong> — vapaa tekstikenttä muistiinpanoille.</li>
+        <li><strong>Kerätty</strong> — rasti, kun tuote on kerätty/tarkistettu.</li>
+      </ul>
+      <p><strong>Tuotteiden lisääminen käsin:</strong> Listan alaosasta voit lisätä tuotteita, jotka eivät tule resepteistä (esim. servetit, kahvi).</p>
+      <p><strong>Vienti ja tulostus:</strong> "Excel" lataa listan taulukkolaskentamuodossa. "Tulosta / PDF" avaa siistin, tulostettavan version, jossa sarakeleveydet ja rivinvaihdot on optimoitu paperille.</p>
+    `
+  },
+  {
+    id: 'kayttajat',
+    title: 'Käyttäjät — Käyttäjien hallinta (vain ylläpito)',
+    keywords: ['käyttäjä', 'rooli', 'hallinta', 'ylläpito', 'salasana', 'admin'],
+    content: `
+      <h2>Käyttäjät</h2>
+      <p>Käyttäjien hallinta on tarkoitettu vain esihenkilöille (admin-rooli).</p>
+      <p><strong>Roolit:</strong></p>
+      <ul>
+        <li><strong>admin (esihenkilö)</strong> — kaikki oikeudet: käyttäjien hallinta, varmuuskopiot, reseptien hyväksyntä.</li>
+        <li><strong>muokkaus</strong> — saa luoda, muokata ja poistaa reseptejä ja ruokalistoja.</li>
+        <li><strong>katselu</strong> — saa vain katsella ja ladata vientitiedostoja, ei tehdä muutoksia.</li>
+      </ul>
+      <p>Käyttäjätunnusten lisääminen, salasanan vaihto ja tunnusten poisto hoidetaan tällä hetkellä järjestelmän ylläpidon kautta (ei vielä omaa välilehteä käyttöliittymässä) — katso tarkemmat ohjeet tiedostosta <em>OHJEET_HALLINTA.md</em> tai ota yhteyttä pääkäyttäjään.</p>
+      <p>Jokainen käyttäjä voi vaihtaa oman salasanansa kirjautumisen jälkeen.</p>
+    `
+  },
+  {
+    id: 'varmuuskopiot',
+    title: 'Varmuuskopiot — Tietokannan varmuuskopiointi',
+    keywords: ['varmuuskopio', 'backup', 'palauta', 'data', 'tietokanta', 'admin'],
+    content: `
+      <h2>Varmuuskopiot</h2>
+      <p>Varmuuskopio on hetkellinen tallenne koko tietokannasta — kaikki reseptit, ruokalistat ja käyttäjät. Sen avulla voidaan palata aiempaan tilanteeseen, jos jotain menee vikaan.</p>
+      <p><strong>Suositus:</strong> ota varmuuskopio säännöllisesti, esimerkiksi ennen isompia muutoksia (uusi vuosisuunnitelma, useiden reseptien tuonti) ja muutenkin viikoittain.</p>
+      <p>Varmuuskopioiden ottaminen ja palauttaminen on tällä hetkellä ylläpidon tehtävä (ei vielä omaa välilehteä käyttöliittymässä) — katso tarkat ohjeet tiedostosta <em>OHJEET_HALLINTA.md</em> kohdasta "Varmuuskopiot", tai ota yhteyttä pääkäyttäjään.</p>
+      <p>Palautuksen yhteydessä nykytilasta otetaan aina automaattisesti turvakopio ennen palautusta, joten vahinko on peruutettavissa.</p>
+    `
+  },
+];
+
+let helpActiveId = null;
+
+function openHelp() {
+  document.getElementById('helpOverlay').classList.add('open');
+  document.getElementById('helpSearch').value = '';
+  renderHelpList();
+  if (!helpActiveId) showHelpArticle(helpArticles[0].id);
+  document.addEventListener('keydown', helpEscHandler);
+}
+
+function closeHelp() {
+  document.getElementById('helpOverlay').classList.remove('open');
+  document.removeEventListener('keydown', helpEscHandler);
+}
+
+function helpEscHandler(e) {
+  if (e.key === 'Escape') closeHelp();
+}
+
+function renderHelpList() {
+  const q = document.getElementById('helpSearch').value.trim().toLowerCase();
+  const matches = helpArticles.filter(a => {
+    if (!q) return true;
+    if (a.title.toLowerCase().includes(q)) return true;
+    return a.keywords.some(k => k.toLowerCase().includes(q));
+  });
+  const list = document.getElementById('helpList');
+  if (!matches.length) {
+    list.innerHTML = '<div class="help-empty">Ei hakutuloksia.</div>';
+    return;
+  }
+  list.innerHTML = matches.map(a =>
+    `<button class="${a.id === helpActiveId ? 'active' : ''}" onclick="showHelpArticle('${a.id}')">${a.title}</button>`
+  ).join('');
+}
+
+function showHelpArticle(id) {
+  const article = helpArticles.find(a => a.id === id);
+  if (!article) return;
+  helpActiveId = id;
+  renderHelpList();
+  document.getElementById('helpArticle').innerHTML =
+    '<button class="help-back" onclick="backToHelpList()">← Takaisin listaan</button>' + article.content;
+  document.getElementById('helpBody').classList.add('showing-article');
+}
+
+function backToHelpList() {
+  document.getElementById('helpBody').classList.remove('showing-article');
+}
+
+const CAT_COLORS = {{ category_colors | tojson }};
+const CAT_NAMES = {{ categories | tojson }};
+const SEASON_NAMES = {{ seasons | tojson }};
+let currentPlanId = null, currentWeek = 1, planData = null, changeCtx = null, reviewData = [];
+
+function showTab(name, btn) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  btn.classList.add('active');
+  if (name === 'recipes') { loadStats(); loadRecipes(); loadNewRecipes(); }
+  if (name === 'review') loadReview();
+  if (name === 'contribute') loadPending();
+  if (name === 'scrape') pollScrape().catch(()=>{});
+  if (name === 'plans') loadPlans();
+  if (name === 'view') loadPlanList();
+  if (name === 'hallinto') { loadBackups(); auditRecipesLoad(); }
+  if (name === 'about') loadAboutStats();
+  if (name === 'health') healthLoadDashboard();
+  if (name === 'audit') auditLoadDashboard();
+}
+
+function jumpToTabStart(tabId) {
+  document.getElementById(tabId).scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+function jumpToTabEnd(tabId) {
+  document.getElementById(tabId).scrollIntoView({behavior:'smooth', block:'end'});
+}
+
+function msg(text, ok=true) {
+  const el = document.getElementById('globalMsg');
+  el.textContent = text; el.className = 'msg ' + (ok ? 'ok' : 'err');
+  setTimeout(() => el.className = 'msg', 5000);
+  window.scrollTo({top: 0, behavior: 'smooth'});
+}
+
+async function api(url, opts) {
+  const r = await fetch(url, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const err = new Error(data.error || 'Virhe');
+    Object.assign(err, data);
+    throw err;
+  }
+  return data;
+}
+
+// ---------- Stats & recipes ----------
+async function loadStats() {
+  const s = await api('/api/stats');
+  let html = '';
+  for (const [k, v] of Object.entries(s.by_season))
+    html += `<div class="stat"><div class="num">${v}</div><div class="lbl">${SEASON_NAMES[k]}</div></div>`;
+  for (const [k, v] of Object.entries(s.by_category))
+    html += `<div class="stat"><div class="num" style="color:${CAT_COLORS[k]}">${v}</div><div class="lbl">${CAT_NAMES[k]}</div></div>`;
+  html += `<div class="stat"><div class="num">${s.plans}</div><div class="lbl">Ruokalistaa</div></div>`;
+  document.getElementById('statGrid').innerHTML = html;
+}
+
+let newRecipesData = { legacy_count: 0, new: [] };
+
+async function loadNewRecipes() {
+  try {
+    newRecipesData = await api('/api/recipes/list-by-source');
+    document.getElementById('newRecipesSummary').textContent =
+      `${newRecipesData.new_count} uutta reseptiä, ${newRecipesData.legacy_count} vanhaa (massatuotu).`;
+    renderNewRecipes();
+  } catch (e) { msg(e.message, false); }
+}
+
+const RECIPE_SOURCE_LABEL = {
+  manual: '👤 Käsin lisätty', user_contributed: '👤 Oma resepti -lomake',
+  poweresta: '📊 PoweResta-tuonti', ocr: '🔍 OCR-tuonti',
+  manual_paste: '📋 Liitetty tekstinä', scraped: '🌐 Verkkokaappaus',
+};
+
+let newRecipesSelected = new Set();
+
+function newRecipesToggleSelect(id) {
+  if (newRecipesSelected.has(id)) newRecipesSelected.delete(id); else newRecipesSelected.add(id);
+}
+
+function newRecipesSelectAll(select) {
+  const visibleIds = newRecipesData.new
+    .filter(r => r.name_fi.toLowerCase().includes((document.getElementById('newRecipesSearch').value || '').toLowerCase()))
+    .map(r => r.id);
+  if (select) visibleIds.forEach(id => newRecipesSelected.add(id));
+  else visibleIds.forEach(id => newRecipesSelected.delete(id));
+  renderNewRecipes();
+}
+
+async function exportSelectedToPoweResta() {
+  const ids = Array.from(newRecipesSelected);
+  if (!ids.length) { msg('Valitse vähintään yksi resepti', false); return; }
+  try {
+    msg('Luodaan PoweResta-vientiä…', true);
+    const resp = await fetch('/api/recipes/export-poweresta', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ recipe_ids: ids }) });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.error || 'Vienti epäonnistui');
+    }
+    const blob = await resp.blob();
+    const cd = resp.headers.get('Content-Disposition') || '';
+    const match = cd.match(/filename="?([^"]+)"?/);
+    const filename = match ? match[1] : 'poweresta_vienti.xlsx';
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url; link.download = filename; link.click();
+    URL.revokeObjectURL(url);
+    msg(`✓ Vietiin ${ids.length} reseptiä.`, true);
+  } catch (e) { msg(e.message, false); }
+}
+
+function renderNewRecipes() {
+  const q = (document.getElementById('newRecipesSearch').value || '').toLowerCase();
+  const items = newRecipesData.new.filter(r => r.name_fi.toLowerCase().includes(q));
+
+  const grouped = {};
+  for (const r of items) {
+    const key = r.source || 'tuntematon';
+    (grouped[key] = grouped[key] || []).push(r);
+  }
+
+  document.getElementById('newRecipesList').innerHTML = Object.entries(grouped).map(([source, recipes]) => `
+    <h4 style="color:#2e7d32; margin:10px 0 4px;">${RECIPE_SOURCE_LABEL[source] || source} (${recipes.length})</h4>
+    ${recipes.map(r => `
+      <div style="padding:8px; background:white; border-radius:4px; margin-bottom:6px; border-left:4px solid #4caf50;
+                  display:flex; justify-content:space-between; align-items:center; gap:8px;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" ${newRecipesSelected.has(r.id) ? 'checked' : ''} onchange="newRecipesToggleSelect(${r.id})">
+          <div>
+            <strong>${r.name_fi}</strong>
+            <div style="font-size:12px; color:#666; margin-top:2px;">
+              ${r.created_at ? new Date(r.created_at.replace(' ', 'T')).toLocaleDateString('fi-FI') : ''}
+            </div>
+          </div>
+        </div>
+        <div style="display:flex; gap:4px; flex-shrink:0;">
+          <button class="btn small secondary" onclick="showRecipeDetails(${r.id})" title="Raaka-aineet">🥕</button>
+          <button class="btn small secondary" onclick='openEdit(${JSON.stringify(r)})' title="Muokkaa">✏️</button>
+          <button class="btn small danger" onclick="delRecipe(${r.id}, '${r.name_fi.replace(/'/g, "\\'")}')" title="Poista">🗑️</button>
+        </div>
+      </div>`).join('')}
+  `).join('') || '<p class="hint">Ei vielä uusia reseptejä.</p>';
+}
+
+let allRecipes = [];
+let selectedRecipeIds = new Set();
+
+async function loadRecipes() {
+  const season = document.getElementById('filterSeason').value;
+  const recipes = await api('/api/recipes' + (season ? '?season=' + season : ''));
+  allRecipes = recipes;
+  // suodatuksen vaihtuessa poista valinnat jotka eivät enää näy listalla
+  const visibleIds = new Set(recipes.map(r => r.id));
+  selectedRecipeIds.forEach(id => { if (!visibleIds.has(id)) selectedRecipeIds.delete(id); });
+
+  document.getElementById('recipeRows').innerHTML = recipes.map(r => `
+    <tr>
+      <td style="text-align:center;"><input type="checkbox" data-recipe-id="${r.id}"
+             ${selectedRecipeIds.has(r.id) ? 'checked' : ''} onchange="recipeToggleSelect(${r.id})"></td>
+      <td>${r.name_fi}</td>
+      <td>${SEASON_NAMES[r.season] || r.season}</td>
+      <td><span class="badge" style="background:${CAT_COLORS[r.dish_category] || '#999'}">${CAT_NAMES[r.dish_category] || r.dish_category}</span></td>
+      <td style="text-align:center;"><input type="checkbox" ${r.manual_only ? 'checked' : ''}
+             onchange="toggleManualOnly(${r.id}, this.checked)"></td>
+      <td>
+        <button class="btn small secondary" onclick="showRecipeDetails(${r.id})">🥕 Raaka-aineet</button>
+        <button class="btn small secondary" onclick='openEdit(${JSON.stringify(r)})'>Muokkaa</button>
+        <button class="btn small danger" onclick="delRecipe(${r.id}, '${r.name_fi.replace(/'/g, "\\'")}')">Poista</button>
+      </td>
+    </tr>`).join('');
+  recipeUpdateExportButton();
+}
+
+async function toggleManualOnly(id, checked) {
+  try {
+    await api('/api/recipes/' + id, { method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ manual_only: checked }) });
+    const r = allRecipes.find(r => r.id === id);
+    if (r) r.manual_only = checked ? 1 : 0;
+    msg(checked ? 'Resepti merkitty vain-käsin-lisättäväksi' : 'Resepti mukana automaattisessa generoinnissa jälleen', true);
+  } catch(e) { msg(e.message, false); loadRecipes(); }
+}
+
+function recipeToggleSelect(id) {
+  if (selectedRecipeIds.has(id)) selectedRecipeIds.delete(id); else selectedRecipeIds.add(id);
+  recipeUpdateExportButton();
+}
+
+function recipeToggleSelectAll() {
+  if (selectedRecipeIds.size === allRecipes.length && allRecipes.length > 0) {
+    selectedRecipeIds.clear();
+  } else {
+    allRecipes.forEach(r => selectedRecipeIds.add(r.id));
+  }
+  document.querySelectorAll('#recipeRows [data-recipe-id]').forEach(cb => {
+    cb.checked = selectedRecipeIds.has(parseInt(cb.dataset.recipeId));
+  });
+  recipeUpdateExportButton();
+}
+
+function recipeUpdateExportButton() {
+  const btn = document.getElementById('recipeExportBtn');
+  const allBtn = document.getElementById('recipeSelectAllBtn');
+  if (selectedRecipeIds.size > 0) {
+    btn.style.display = 'inline-block';
+    btn.textContent = `📤 Vie PoweRestaan (${selectedRecipeIds.size})`;
+  } else {
+    btn.style.display = 'none';
+  }
+  allBtn.textContent = (selectedRecipeIds.size === allRecipes.length && allRecipes.length > 0)
+    ? '☑ Poista valinnat' : '☐ Valitse kaikki';
+}
+
+function recipeExportSelected() {
+  if (selectedRecipeIds.size === 0) { msg('Valitse vähintään yksi resepti', false); return; }
+  const ids = Array.from(selectedRecipeIds).join(',');
+  window.open(`/api/recipes/export-selected/poweresta?recipe_ids=${ids}`, '_blank');
+}
+
+async function addRecipe() {
+  try {
+    const d = await api('/api/recipes', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ name_fi: document.getElementById('newName').value,
+                             season: document.getElementById('newSeason').value,
+                             dish_category: document.getElementById('newCategory').value })});
+    msg(d.message); document.getElementById('newName').value = '';
+    loadStats(); loadRecipes(); loadNewRecipes();
+  } catch(e) { msg(e.message, false); }
+}
+
+function openEdit(r) {
+  document.getElementById('editId').value = r.id;
+  document.getElementById('editName').value = r.name_fi;
+  document.getElementById('editSeason').value = r.season;
+  document.getElementById('editCategory').value = r.dish_category;
+  document.getElementById('editModal').classList.add('open');
+}
+
+async function saveEdit() {
+  try {
+    await api('/api/recipes/' + document.getElementById('editId').value, {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ name_fi: document.getElementById('editName').value,
+                             season: document.getElementById('editSeason').value,
+                             dish_category: document.getElementById('editCategory').value })});
+    document.getElementById('editModal').classList.remove('open');
+    msg('Resepti päivitetty'); loadStats(); loadRecipes(); loadNewRecipes();
+  } catch(e) { msg(e.message, false); }
+}
+
+async function delRecipe(id, name) {
+  if (!confirm(`Poistetaanko resepti "${name}"?\n\nJos resepti on jonkin ruokalistan käytössä, se poistetaan myös sieltä — kyseinen suunnitelma pitää sen jälkeen uusia.`)) return;
+  try { const d = await api('/api/recipes/' + id, { method:'DELETE' });
+        msg(d.message); loadStats(); loadRecipes(); loadNewRecipes(); }
+  catch(e) { msg(e.message, false); }
+}
+
+// ---------- Recipe ingredient editor (collaborative, with change history) ----------
+let rdRecipeId = null;
+let rdOriginalIngredients = [];   // last-fetched real (unmultiplied) quantities
+let rdActiveMultiplier = 1;       // 1 = showing real, stored quantities
+let rdBaseServings = null;        // recipe's stored servings count, unmultiplied
+
+function rdRenderServings() {
+  const el = document.getElementById('rdServings');
+  if (!rdBaseServings) { el.textContent = ''; return; }
+  if (rdActiveMultiplier === 1) {
+    el.textContent = `📋 ${rdBaseServings} annosta ·`;
+  } else {
+    const scaled = Math.round(rdBaseServings * rdActiveMultiplier * 100) / 100;
+    el.textContent = `📋 ${rdBaseServings} annosta → ×${rdActiveMultiplier} = ${scaled} annosta ·`;
+  }
+}
+
+async function showRecipeDetails(recipeId) {
+  rdRecipeId = recipeId;
+  try {
+    const d = await api(`/api/recipes/${recipeId}/details`);
+    document.getElementById('rdName').textContent = d.recipe.name_fi;
+    document.getElementById('rdMeta').textContent =
+      `${SEASON_NAMES[d.recipe.season] || d.recipe.season} · ${CAT_NAMES[d.recipe.dish_category] || d.recipe.dish_category}`;
+    document.getElementById('rdNotes').textContent = d.recipe.notes ? `Huomiot: ${d.recipe.notes}` : '';
+    rdBaseServings = d.recipe.servings || null;
+    rdOriginalIngredients = d.ingredients;
+    rdActiveMultiplier = 1;
+    document.getElementById('rdMultiplier').value = 1;
+    rdRenderServings();
+    rdRenderIngredients(d.ingredients);
+    rdRenderHistory(d.change_history);
+    document.getElementById('recipeDetailModal').classList.add('open');
+  } catch (e) { msg(e.message, false); }
+}
+
+function closeRecipeDetail() {
+  document.getElementById('recipeDetailModal').classList.remove('open');
+  rdRecipeId = null;
+}
+
+function rdRenderIngredients(ingredients) {
+  const esc = s => (s || '').replace(/"/g, '&quot;');
+  const scaled = rdActiveMultiplier !== 1;
+  document.getElementById('rdIngRows').innerHTML = ingredients.map(ing => `
+    <tr>
+      <td>${ing.ingredient_name}</td>
+      <td><input type="number" step="0.01" min="0" value="${ing.quantity ?? ''}" ${scaled ? 'disabled title="Kerrottu näkymä — nollaa ensin muokataksesi"' : ''}
+                 onchange="rdUpdateIngredient(${ing.ingredient_id}, 'quantity', this.value)" style="width:80px;"></td>
+      <td><input value="${esc(ing.unit)}" ${scaled ? 'disabled' : ''}
+                 onchange="rdUpdateIngredient(${ing.ingredient_id}, 'unit', this.value)" style="width:70px;"></td>
+      <td><input value="${esc(ing.ingredient_instruction)}" placeholder="esim. tuoreita, pilkottuja" ${scaled ? 'disabled' : ''}
+                 onchange="rdUpdateIngredient(${ing.ingredient_id}, 'ingredient_instruction', this.value)"></td>
+      <td><button class="btn small danger" ${scaled ? 'disabled' : ''} onclick="rdDeleteIngredient(${ing.ingredient_id})">🗑</button></td>
+    </tr>`).join('') || '<tr><td colspan="5" style="color:#999;">Ei vielä raaka-aineita.</td></tr>';
+}
+
+function rdApplyMultiplier() {
+  const factor = parseFloat(document.getElementById('rdMultiplier').value);
+  if (!factor || factor <= 0) { msg('Anna kelvollinen kerroin (suurempi kuin 0)', false); return; }
+  rdActiveMultiplier = factor;
+  const scaled = rdOriginalIngredients.map(ing => ({
+    ...ing,
+    quantity: ing.quantity != null ? Math.round(ing.quantity * factor * 100) / 100 : ing.quantity,
+  }));
+  rdRenderIngredients(scaled);
+  rdRenderServings();
+  document.getElementById('rdMultiplierNote').textContent =
+    factor === 1 ? '' : `Näytetään ×${factor} — ei tallenneta reseptiin. Muokkaus lukittu, kunnes nollaat.`;
+}
+
+function rdResetMultiplier() {
+  rdActiveMultiplier = 1;
+  document.getElementById('rdMultiplier').value = 1;
+  rdRenderServings();
+  document.getElementById('rdMultiplierNote').textContent = '';
+  rdRenderIngredients(rdOriginalIngredients);
+}
+
+function rdRenderHistory(history) {
+  document.getElementById('rdHistory').innerHTML = history.length
+    ? history.map(h => `<p style="margin:4px 0;"><strong>${h.changed_by}</strong> — ${h.description}
+        <br><span style="opacity:.7;">${h.timestamp}</span></p>`).join('')
+    : '<p style="color:#999;">Ei muutoksia vielä.</p>';
+}
+
+async function rdReload() {
+  const d = await api(`/api/recipes/${rdRecipeId}/details`);
+  rdOriginalIngredients = d.ingredients;
+  if (rdActiveMultiplier !== 1) {
+    rdApplyMultiplier();  // keep showing the same multiplier against fresh data
+  } else {
+    rdRenderIngredients(d.ingredients);
+  }
+  rdRenderHistory(d.change_history);
+}
+
+async function rdAddIngredient() {
+  const name = document.getElementById('rdNewName').value.trim();
+  if (!name) { msg('Anna raaka-aineen nimi', false); return; }
+  try {
+    await api(`/api/recipes/${rdRecipeId}/ingredients`, { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        ingredient_name: name,
+        quantity: document.getElementById('rdNewQty').value,
+        unit: document.getElementById('rdNewUnit').value,
+      })});
+    document.getElementById('rdNewName').value = '';
+    document.getElementById('rdNewQty').value = '';
+    document.getElementById('rdNewUnit').value = '';
+    rdReload();
+  } catch (e) { msg(e.message, false); }
+}
+
+async function rdUpdateIngredient(ingredientId, field, value) {
+  try {
+    await api(`/api/recipes/${rdRecipeId}/ingredients/${ingredientId}`, { method:'PATCH',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({ [field]: value }) });
+    rdReload();
+  } catch (e) { msg(e.message, false); rdReload(); }
+}
+
+async function rdDeleteIngredient(ingredientId) {
+  if (!confirm('Poistetaanko raaka-aine?')) return;
+  try {
+    await api(`/api/recipes/${rdRecipeId}/ingredients/${ingredientId}`, { method:'DELETE' });
+    rdReload();
+  } catch (e) { msg(e.message, false); }
+}
+
+// ---------- Review queue ----------
+async function loadReview() {
+  reviewData = await api('/api/review');
+  const empty = document.getElementById('reviewEmpty');
+  const table = document.getElementById('reviewTable');
+  const btn = document.getElementById('approveBtn');
+  if (!reviewData.length) { empty.style.display='block'; table.style.display='none'; btn.style.display='none'; return; }
+  empty.style.display='none'; table.style.display='table'; btn.style.display='inline-block';
+  renderReview();
+}
+
+function renderReview() {
+  const seasonOpts = (sel) => Object.entries(SEASON_NAMES).map(([k,v]) =>
+    `<option value="${k}" ${k===(sel || 'kaikki')?'selected':''}>${v}</option>`).join('');
+  const catOpts = (sel) => Object.entries(CAT_NAMES).map(([k,v]) =>
+    `<option value="${k}" ${k===(sel || 'kasvis')?'selected':''}>${v}</option>`).join('');
+  document.getElementById('reviewRows').innerHTML = reviewData.map((r, i) => r.deleted ? '' : `
+    <tr>
+      <td><input value="${(r.name_fi||'').replace(/"/g,'&quot;')}" onchange="reviewData[${i}].name_fi=this.value">
+          ${r.season || r.dish_category ? '<div class="hint" style="margin-top:2px;">arvattu automaattisesti — tarkista</div>' : ''}</td>
+      <td style="font-size:12px;">${r.review_action === 'updated' ? '🔄 Päivitys: ' : ''}${r.source_site || ''}</td>
+      <td><select onchange="reviewData[${i}].season=this.value">
+        <option value="">– valitse –</option>${seasonOpts(r.season)}</select></td>
+      <td><select onchange="reviewData[${i}].dish_category=this.value">
+        <option value="">– valitse –</option>${catOpts(r.dish_category)}</select></td>
+      <td><button class="btn small danger" onclick="reviewData[${i}].deleted=true; renderReview()">✕</button></td>
+    </tr>`).join('');
+}
+
+let approvePoll = null;
+
+async function approveReview() {
+  try {
+    const d = await api('/api/review/approve', { method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify(reviewData) });
+    document.getElementById('approveBtn').disabled = true;
+    document.getElementById('approveProgress').style.display = 'block';
+    document.getElementById('approveProgressBar').style.width = '0%';
+    document.getElementById('approveProgressText').textContent =
+      `Viedään tietokantaan: 0/${d.total}`;
+    pollApprove();
+  } catch(e) { msg(e.message, false); }
+}
+
+async function pollApprove() {
+  if (approvePoll) clearTimeout(approvePoll);
+  let s;
+  try { s = await api('/api/review/approve/status'); }
+  catch(e) { msg(e.message, false); return; }
+
+  const pct = s.total ? Math.round(100 * s.done / s.total) : 100;
+  document.getElementById('approveProgressBar').style.width = pct + '%';
+  document.getElementById('approveProgressText').textContent =
+    `Viedään tietokantaan: ${s.done}/${s.total}`;
+
+  if (s.running) {
+    approvePoll = setTimeout(pollApprove, 600);
+    return;
+  }
+
+  document.getElementById('approveBtn').disabled = false;
+  document.getElementById('approveProgress').style.display = 'none';
+
+  if (s.error) {
+    msg(s.error, false);
+  } else if (s.result) {
+    const d = s.result;
+    let m = `${d.uploaded} reseptiä viety tietokantaan.`;
+    if (d.updated) m += ` ${d.updated} reseptin raaka-aineet päivitetty.`;
+    if (d.skipped.length) m += ` Ohitettu (${d.skipped.length}): ${d.skipped.slice(0,5).join(', ')}${d.skipped.length>5?'…':''}`;
+    msg(m, true);
+  }
+  loadReview();
+}
+
+// ---------- Contribute recipes ----------
+let myRole = null;
+const ING_UNITS = ['kg', 'g', 'l', 'dl', 'ml', 'rkl', 'tl', 'kpl'];
+
+function addIngRow() {
+  const tbody = document.getElementById('contribIngRows');
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><input type="number" step="0.01" min="0" class="ingAmount"></td>
+    <td><select class="ingUnit">${ING_UNITS.map(u => `<option value="${u}">${u}</option>`).join('')}</select></td>
+    <td><input class="ingName" placeholder="esim. broileri"></td>
+    <td><input class="ingInstruction" placeholder="esim. kypsä, luonnonvärinen"></td>
+    <td><button class="btn small danger" onclick="this.closest('tr').remove()">✕</button></td>`;
+  tbody.appendChild(tr);
+}
+
+function resetIngRows() {
+  document.getElementById('contribIngRows').innerHTML = '';
+  addIngRow();
+}
+
+function collectIngRows() {
+  return [...document.querySelectorAll('#contribIngRows tr')].map(tr => ({
+    amount: tr.querySelector('.ingAmount').value,
+    unit: tr.querySelector('.ingUnit').value,
+    name: tr.querySelector('.ingName').value,
+    instruction: tr.querySelector('.ingInstruction').value
+  })).filter(r => r.name.trim());
+}
+
+async function submitContribution() {
+  try {
+    const d = await api('/api/recipes/contribute', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        name_fi: document.getElementById('contribName').value,
+        season: document.getElementById('contribSeason').value,
+        dish_category: document.getElementById('contribCategory').value,
+        ingredients: collectIngRows(),
+        instructions_raw: document.getElementById('contribInstructions').value,
+        notes: document.getElementById('contribNotes').value
+      })});
+    msg(d.message);
+    document.getElementById('contribName').value = '';
+    resetIngRows();
+    document.getElementById('contribInstructions').value = '';
+    document.getElementById('contribNotes').value = '';
+    loadPending();
+  } catch(e) { msg(e.message, false); }
+}
+resetIngRows();
+
+async function loadPending() {
+  if (myRole === null) {
+    try { myRole = (await api('/api/me')).role; } catch(e) { myRole = ''; }
+  }
+  const card = document.getElementById('pendingCard');
+  if (myRole !== 'admin') { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  const pending = await api('/api/recipes/pending');
+  document.getElementById('pendingRows').innerHTML = pending.map(r => `
+    <tr>
+      <td>${r.name_fi}</td>
+      <td>${SEASON_NAMES[r.season] || r.season}</td>
+      <td><span class="badge" style="background:${CAT_COLORS[r.dish_category] || '#999'}">${CAT_NAMES[r.dish_category] || r.dish_category}</span></td>
+      <td>${r.created_by_username || ''}</td>
+      <td style="font-size:12px;">${r.ingredients.map(i =>
+        `${i.quantity ?? '?'} ${i.unit || ''} ${i.ingredient_name}${i.ingredient_instruction ? ' ('+i.ingredient_instruction+')' : ''}`
+      ).join('<br>')}</td>
+      <td>
+        <button class="btn small" onclick="approvePending(${r.id})">✅ Hyväksy</button>
+        <button class="btn small danger" onclick="rejectPending(${r.id})">✕ Hylkää</button>
+      </td>
+    </tr>`).join('') || '<tr><td colspan="6" style="color:#999;">Ei odottavia reseptejä.</td></tr>';
+}
+
+async function approvePending(id) {
+  try { const d = await api(`/api/recipes/pending/${id}/approve`, { method:'POST',
+    headers:{'Content-Type':'application/json'}, body: '{}' });
+    msg(d.message); loadPending(); }
+  catch(e) { msg(e.message, false); }
+}
+
+async function rejectPending(id) {
+  if (!confirm('Hylätäänkö resepti?')) return;
+  try { const d = await api(`/api/recipes/pending/${id}/reject`, { method:'POST' });
+    msg(d.message); loadPending(); }
+  catch(e) { msg(e.message, false); }
+}
+
+// ---------- Plans ----------
+async function loadPlans() {
+  const plans = await api('/api/plans');
+  document.getElementById('planRows').innerHTML = plans.map(p => `
+    <tr>
+      <td>${p.name}</td><td>${SEASON_NAMES[p.season] || p.season}</td><td>${p.num_weeks}</td>
+      <td style="font-size:12px;">${(p.created_at||'').substring(0,16).replace('T',' ')}</td>
+      <td>
+        <button class="btn small" onclick="window.location='/api/plans/${p.id}/export'">📥 Excel</button>
+        <button class="btn small secondary" onclick="kesproExport(${p.id})">🛒 Kespro</button>
+        <button class="btn small danger" onclick="delPlan(${p.id})">Poista</button>
+      </td>
+    </tr>`).join('') || '<tr><td colspan="5" style="color:#999;">Ei ruokalistoja vielä — luo ensimmäinen yllä.</td></tr>';
+}
+
+async function createPlan(replace) {
+  const season = document.getElementById('planSeason').value;
+  msg('Luodaan ruokalistaa, hetki…');
+  try {
+    const d = await api('/api/plans', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ season, num_weeks: document.getElementById('planWeeks').value,
+                             replace: !!replace,
+                             only_new_recipes: document.getElementById('planOnlyNew').checked })});
+    if (season === 'vuosi') {
+      msg(d.message || `Ruokalista luotu! ${d.total_meals} ateriaa, ${d.recipes_used} eri reseptiä.`);
+    } else {
+      msg(`Ruokalista luotu! ${d.stats.total_meals} ateriaa, ${d.stats.unique_recipes} eri reseptiä.`);
+    }
+    loadPlans();
+  } catch(e) {
+    if (season === 'vuosi' && e.existing_plan_id && confirm(
+        `${e.message}\n\nKorvataanko olemassa oleva vuosisuunnitelma ("${e.existing_plan_name}") uudella?`)) {
+      return createPlan(true);
+    }
+    msg(e.message, false);
+  }
+}
+
+async function delPlan(id) {
+  if (!confirm('Poistetaanko ruokalista? Tätä ei voi perua.')) return;
+  try { await api('/api/plans/' + id, { method:'DELETE' }); msg('Ruokalista poistettu'); loadPlans(); }
+  catch(e) { msg(e.message, false); }
+}
+
+function kesproExport(planId) {
+  const week = prompt('Minkä viikon Kespro-tilauspohja? (viikon numero)', '1');
+  if (week) window.location = `/api/plans/${planId}/kespro?week=${parseInt(week)}`;
+}
+
+// ---------- View / edit plan ----------
+async function loadPlanList() {
+  const plans = await api('/api/plans');
+  const sel = document.getElementById('viewPlanSelect');
+  sel.innerHTML = '<option value="">– valitse –</option>' +
+    plans.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+}
+
+async function loadPlanView() {
+  currentPlanId = document.getElementById('viewPlanSelect').value;
+  if (!currentPlanId) { document.getElementById('planView').innerHTML=''; return; }
+  planData = await api('/api/plans/' + currentPlanId);
+  currentWeek = 1;
+  renderPager(); renderWeek(); loadHistory();
+}
+
+function renderPager() {
+  const weeks = Object.keys(planData.weeks).map(Number).sort((a,b)=>a-b);
+  document.getElementById('weekPager').innerHTML = weeks.map(w =>
+    `<button class="${w===currentWeek?'cur':''}" onclick="currentWeek=${w}; renderPager(); renderWeek();">Vko ${w}</button>`).join('');
+}
+
+const WEEKDAY_NAMES = ['Ma', 'Ti', 'Ke', 'To', 'Pe'];
+const ROLE_LABELS = { soup: 'Keitto', main: 'Pääruoka', salad: 'Salaatti' };
+const ROLE_MEAL_TYPE = { soup: 'keitto', main: 'lounas', salad: 'salaatti' };
+
+function renderWeek() {
+  const days = planData.weeks[currentWeek] || [];
+  const totalMeals = days.reduce((n, d) => n + ['soup', 'main', 'salad'].filter(r => d[r]).length, 0);
+  document.getElementById('planView').innerHTML = `
+    <div class="card week-block">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:7px; flex-wrap:wrap; gap:8px;">
+        <div class="week-title" style="margin-bottom:0;">Viikko ${currentWeek} — ${totalMeals} ateriaa</div>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <button class="btn small" onclick="downloadMenu('pdf')">📄 Viikkomenu PDF (vko ${currentWeek})</button>
+          <button class="btn small secondary" onclick="downloadMenu('docx')" title="Muokattava Word-versio ilman grafiikkaa">Word</button>
+          <button class="btn small secondary" onclick="katFromPlan()" title="Luo viikon raaka-aineista tilauslista">🛒 Tilauslista (vko ${currentWeek})</button>
+        </div>
+      </div>
+      <div class="meals">` + days.map(d => `
+        <div class="day-block" style="margin-bottom:12px;">
+          <div style="font-weight:bold; margin-bottom:4px;">${WEEKDAY_NAMES[d.day] ?? ('Päivä ' + d.day)}</div>` +
+          ['soup', 'main', 'salad'].map(role => !d[role] ? '' : `
+          <div class="meal" style="background:${CAT_COLORS[d[role].category]}33; border-left:5px solid ${CAT_COLORS[d[role].category]};"
+               onclick="openChange(${d.day}, '${role}', ${d[role].recipe_id}, '${d[role].name.replace(/'/g, "\\'")}')">
+            <div class="slot">${ROLE_LABELS[role]}</div>${d[role].name}
+          </div>`).join('') + `
+        </div>`).join('') + `</div></div>`;
+}
+
+async function openChange(day, role, recipeId, name) {
+  changeCtx = { week: currentWeek, day, role };
+  const mealType = ROLE_MEAL_TYPE[role];
+  document.getElementById('changeCurrent').innerHTML =
+    `Viikko <b>${currentWeek}</b>, ${WEEKDAY_NAMES[day] ?? day} — ${ROLE_LABELS[role]}: nykyinen ruoka <b>${name}</b>`;
+  const sugg = await api(`/api/plans/${currentPlanId}/suggestions?week=${currentWeek}&slot=${day}&meal_type=${mealType}`);
+  document.getElementById('changeNewRecipe').innerHTML =
+    sugg.map(s => `<option value="${s.id}">${s.name}</option>`).join('') ||
+    `<option value="">Ei ehdotuksia samasta kategoriasta (${ROLE_LABELS[role].toLowerCase()})</option>`;
+  document.getElementById('changeModal').classList.add('open');
+}
+
+function closeModal() { document.getElementById('changeModal').classList.remove('open'); }
+
+async function submitChange() {
+  const newId = document.getElementById('changeNewRecipe').value;
+  if (!newId) { msg('Valitse uusi resepti', false); return; }
+  try {
+    await api(`/api/plans/${currentPlanId}/change_meal`, { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ week: changeCtx.week, slot: changeCtx.day, meal_type: ROLE_MEAL_TYPE[changeCtx.role],
+        new_recipe_id: newId,
+        reason: document.getElementById('changeReason').value,
+        modified_by: document.getElementById('changeBy').value || 'käyttäjä' })});
+    closeModal(); msg('Ateria vaihdettu ja kirjattu lokiin');
+    planData = await api('/api/plans/' + currentPlanId);
+    renderWeek(); loadHistory();
+  } catch(e) { msg(e.message, false); }
+}
+
+
+async function downloadMenu(fmt) {
+  fmt = fmt || 'pdf';
+  try {
+    const url = `/api/plans/${currentPlanId}/menu?week=${currentWeek}&format=${fmt}`;
+    const r = await fetch(url);
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.error || 'Menun luonti epäonnistui');
+    }
+    const blob = await r.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `viikkomenu_vko${currentWeek}.${fmt}`;
+    document.body.appendChild(a); a.click(); a.remove();
+    msg(`Viikkomenu (vko ${currentWeek}, ${fmt.toUpperCase()}) ladattu`);
+  } catch(e) { msg(e.message, false); }
+}
+
+async function loadHistory() {
+  const hist = await api(`/api/plans/${currentPlanId}/history`);
+  const card = document.getElementById('historyCard');
+  if (!hist.length) { card.style.display='none'; return; }
+  card.style.display='block';
+  document.getElementById('historyRows').innerHTML = hist.map(h => `
+    <tr><td style="font-size:12px;">${(h.at||'').substring(0,16)}</td>
+        <td>Vko ${h.week} / ${h.day}</td>
+        <td>${h.from} → <b>${h.to}</b></td>
+        <td>${h.reason}</td><td>${h.by}</td></tr>`).join('');
+}
+
+
+
+// ---------- Imports (PoweResta Excel + paste) ----------
+async function importPoweresta() {
+  const f = document.getElementById('powFile').files[0];
+  if (!f) { msg('Valitse .xlsx-tiedosto', false); return; }
+  const fd = new FormData();
+  fd.append('file', f);
+  try {
+    const r = await fetch('/api/import/poweresta', { method:'POST', body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Virhe');
+    msg(d.message);
+    document.getElementById('powFile').value = '';
+  } catch(e) { msg(e.message, false); }
+}
+
+async function importPaste() {
+  try {
+    const d = await api('/api/import/paste', { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ text: document.getElementById('pasteText').value })});
+    msg(d.message);
+    document.getElementById('pasteText').value = '';
+  } catch(e) { msg(e.message, false); }
+}
+
+function handlePdfDragOver(event) {
+  event.preventDefault();
+  event.currentTarget.style.background = '#e3f2fd';
+}
+
+function handlePdfDragLeave(event) { event.currentTarget.style.background = '#fff'; }
+
+async function handlePdfDrop(event) {
+  event.preventDefault();
+  event.currentTarget.style.background = '#fff';
+  await processPdfBatch(event.dataTransfer.files);
+}
+
+function handlePdfSelect(event) { processPdfBatch(event.target.files); }
+
+function pdfEscapeHtml(value) {
+  const el = document.createElement('span');
+  el.textContent = value;
+  return el.innerHTML;
+}
+
+async function processPdfBatch(files) {
+  const pdfFiles = Array.from(files).filter(file => file.type === 'application/pdf' || /\.pdf$/i.test(file.name));
+  if (!pdfFiles.length) { msg('Valitse PDF-tiedostoja', false); return; }
+  const progress = document.getElementById('pdf-upload-progress');
+  const resultsBox = document.getElementById('pdf-results');
+  const bar = document.getElementById('pdf-progress-bar');
+  progress.style.display = 'block'; resultsBox.style.display = 'none'; bar.style.width = '0%';
+  const results = {created: 0, updated: 0, errors: []};
+  for (let i = 0; i < pdfFiles.length; i++) {
+    document.getElementById('pdf-progress-text').textContent = `Käsitellään: ${i + 1}/${pdfFiles.length} — ${pdfFiles[i].name}`;
+    bar.style.width = `${Math.round(((i + 1) / pdfFiles.length) * 100)}%`;
+    const fd = new FormData(); fd.append('file', pdfFiles[i]);
+    try {
+      const response = await fetch('/api/import/poweresta-pdf', {method: 'POST', body: fd});
+      const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error || 'Tuntematon virhe');
+      results[data.action === 'updated' ? 'updated' : 'created']++;
+    } catch (error) { results.errors.push({file: pdfFiles[i].name, error: error.message}); }
+  }
+  progress.style.display = 'none'; resultsBox.style.display = 'block';
+  document.getElementById('pdf-results-summary').textContent = `✓ ${results.created} uutta, 🔄 ${results.updated} päivitettävää${results.errors.length ? `, ✗ ${results.errors.length} virhettä` : ''}`;
+  document.getElementById('pdf-results-list').innerHTML = `${results.errors.length ? `<p style="color:#b00020"><strong>Virheet:</strong></p>${results.errors.map(item => `<p style="font-size:.9rem">• ${pdfEscapeHtml(item.file)}: ${pdfEscapeHtml(item.error)}</p>`).join('')}` : ''}<p style="color:#1a5c3a; margin-top:10px"><strong>Reseptit ovat tarkistusjonossa. Hyväksy ne Tarkistusjono-välilehdellä.</strong></p>`;
+  document.getElementById('pdf-file-input').value = '';
+  msg('PDF-tiedostot käsitelty', true);
+}
+
+
+// ---------- OCR import ----------
+let ocrPoll = null;
+
+async function startOcr() {
+  const files = document.getElementById('ocrFiles').files;
+  if (!files.length) { msg('Valitse vähintään yksi kuva', false); return; }
+  const fd = new FormData();
+  for (const f of files) fd.append('files', f);
+  fd.append('main_meals_only', document.getElementById('ocrMainOnly').checked ? '1' : '0');
+  try {
+    const r = await fetch('/api/import/ocr', { method:'POST', body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Virhe');
+    msg(d.message);
+    document.getElementById('ocrProgress').style.display = 'block';
+    pollOcr();
+  } catch(e) { msg(e.message, false); }
+}
+
+async function pollOcr() {
+  if (ocrPoll) clearTimeout(ocrPoll);
+  const s = await api('/api/import/ocr/status');
+  const pct = s.total ? Math.round(100 * s.done / s.total) : 0;
+  const bar = document.getElementById('ocrBar');
+  bar.style.width = pct + '%'; bar.textContent = pct + '%';
+  document.getElementById('ocrSummary').textContent =
+    `${s.done}/${s.total} kuvaa käsitelty — ${s.dishes} uutta ruokaa jonossa, ${s.failed} epäonnistui`;
+  document.getElementById('ocrLog').innerHTML =
+    s.log.slice().reverse().map(l => `<div>${l}</div>`).join('');
+  if (s.running) { ocrPoll = setTimeout(pollOcr, 1500); }
+  else if (s.total > 0 && s.dishes > 0) {
+    msg(`OCR valmis: ${s.dishes} ruokaa tarkistusjonossa`);
+    document.getElementById('ocrFiles').value = '';
+  }
+}
+
+// ---------- Scraping ----------
+let scrapePoll = null;
+
+async function startScrape(fromListing) {
+  const body = fromListing
+    ? { listing_url: document.getElementById('scrapeListing').value,
+        limit: document.getElementById('scrapeLimit').value }
+    : { urls: document.getElementById('scrapeUrls').value };
+  try {
+    const d = await api('/api/scrape', { method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    msg(d.message);
+    document.getElementById('scrapeProgress').style.display = 'block';
+    document.getElementById('scrapeGoReview').style.display = 'none';
+    document.getElementById('scrapeBtn').disabled = true;
+    document.getElementById('scrapeListBtn').disabled = true;
+    pollScrape();
+  } catch(e) { msg(e.message, false); }
+}
+
+async function pollScrape() {
+  if (scrapePoll) clearTimeout(scrapePoll);
+  const s = await api('/api/scrape/status');
+  const pct = s.total ? Math.round(100 * s.done / s.total) : 0;
+  const bar = document.getElementById('scrapeBar');
+  bar.style.width = pct + '%';
+  bar.textContent = pct + '%';
+  document.getElementById('scrapeSummary').textContent =
+    `${s.done}/${s.total} käsitelty — ✅ ${s.ok} onnistui, ❌ ${s.failed} epäonnistui`;
+  document.getElementById('scrapeLog').innerHTML =
+    s.log.slice().reverse().map(l => `<div>${l}</div>`).join('');
+  if (s.error) { msg('Haku keskeytyi: ' + s.error, false); }
+  if (s.running) {
+    scrapePoll = setTimeout(pollScrape, 1200);
+  } else {
+    document.getElementById('scrapeBtn').disabled = false;
+    document.getElementById('scrapeListBtn').disabled = false;
+    if (s.total > 0) {
+      document.getElementById('scrapeGoReview').style.display = 'inline-block';
+      if (s.ok > 0) msg(`Haku valmis: ${s.ok} uutta reseptiä tarkistusjonossa`);
+    }
+  }
+}
+
+// CATALOG
+let katCatalogId = null;
+function katWeek() { const v = parseInt(document.getElementById('katViikko').value); return (v >= 1 && v <= 53) ? v : null; }
+function currentPlan() { return currentPlanId || parseInt(document.getElementById('viewPlanSelect')?.value) || 1; }
+/* Generate the order list for the week currently open in 'Selaa & muokkaa'
+   and jump straight to the Tilauslista tab showing it. */
+async function katFromPlan() {
+  const d = await api('/api/catalog/generate', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({plan_id: currentPlan(), week: currentWeek}) });
+  msg(d.warning ? d.warning : `Tilauslista laskettu: ${d.items} tuotetta`, !d.warning);
+  document.getElementById('katViikko').value = currentWeek;
+  const katBtn = [...document.querySelectorAll('nav button')].find(b => b.textContent.includes('Tilauslista'));
+  showTab('catalog', katBtn);
+  katLoad();
+}
+async function katLoad() {
+  const week = katWeek();
+  if (!week) return;
+  const d = await api(`/api/catalog?plan_id=${currentPlan()}&week=${week}`);
+  katCatalogId = d.catalog ? d.catalog.id : null;
+  const body = document.getElementById('katBody');
+  body.innerHTML = '';
+  document.getElementById('katInfo').textContent = d.catalog ? `${d.items.length} tuotetta` : 'Ei listaa.';
+  for (const it of d.items) {
+    const qty = it.adjusted_qty !== null ? it.adjusted_qty : (it.calculated_qty ?? 0);
+    const tr = document.createElement('tr');
+    tr.style.borderBottom = '1px solid #eee';
+    if (it.checked) tr.style.opacity = '0.45';
+    tr.innerHTML = `<td style="padding:.35rem">${it.name}${it.manual ? ' <small>(käsin)</small>' : ''}</td><td>${it.unit || ''}</td><td style="color:#888">${it.calculated_qty ?? '—'}</td><td><input type="number" step="0.1" min="0" value="${qty}" style="width:75px; ${it.adjusted_qty !== null ? 'font-weight:bold; background:#f0f8f0' : ''}" onchange="katSet(${it.id}, this.value)"></td><td><input value="${it.note || ''}" placeholder="huom." style="width:95%" onchange="katNote(${it.id}, this.value)"></td><td style="text-align:center"><input type="checkbox" ${it.checked ? 'checked' : ''} onchange="katCheck(${it.id}, this.checked)"></td><td><button class="btn small" onclick="katDelete(${it.id})">🗑</button></td>`;
+    body.appendChild(tr);
+  }
+}
+async function katGenerate() { const week = katWeek(); if (!week) { msg('Anna viikkonumero', false); return; } const d = await api('/api/catalog/generate', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({plan_id: currentPlan(), week}) }); msg(d.warning ? d.warning : `Laskettu: ${d.items} tuotetta`, !d.warning); katLoad(); }
+async function katSet(id, value) { await api(`/api/catalog/item/${id}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({adjusted_qty: value === '' ? null : parseFloat(value)}) }); katLoad(); }
+async function katNote(id, note) { await api(`/api/catalog/item/${id}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({note}) }); }
+async function katCheck(id, checked) { await api(`/api/catalog/item/${id}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({checked}) }); katLoad(); }
+async function katDelete(id) { await api(`/api/catalog/item/${id}`, {method:'DELETE'}); katLoad(); }
+async function katAddManual() { const name = document.getElementById('katUusiNimi').value.trim(); if (!name) { msg('Anna tuotteen nimi', false); return; } if (!katCatalogId) { msg('Laske lista ensin', false); return; } await api('/api/catalog/item', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({catalog_id: katCatalogId, name, qty: parseFloat(document.getElementById('katUusiMaara').value) || 0, unit: document.getElementById('katUusiYksikko').value.trim()}) }); document.getElementById('katUusiNimi').value = ''; katLoad(); }
+function katExport() { const week = katWeek(); if (!week) { msg('Anna viikkonumero', false); return; } window.location = `/api/catalog/export?plan_id=${currentPlan()}&week=${week}`; }
+function katPrint() { const week = katWeek(); if (!week) { msg('Anna viikkonumero', false); return; } window.open(`/api/catalog/export/pdf?plan_id=${currentPlan()}&week=${week}`, '_blank'); }
+(function() { const now = new Date(), jan4 = new Date(now.getFullYear(), 0, 4), week = Math.ceil((((now - jan4) / 86400000) + jan4.getDay() + 1) / 7); document.getElementById('katViikko').value = Math.min(Math.max(week, 1), 53); })();
+
+// ---------- Hallinto (admin): varmuuskopiot + koko paketti ----------
+async function checkAdminNav() {
+  if (myRole === null) {
+    try { myRole = (await api('/api/me')).role; } catch(e) { myRole = ''; }
+  }
+  document.getElementById('navHallinto').style.display = myRole === 'admin' ? '' : 'none';
+  document.getElementById('navHealth').style.display = myRole === 'admin' ? '' : 'none';
+}
+
+async function loadBackups() {
+  const rows = await api('/api/backup');
+  document.getElementById('backupRows').innerHTML = rows.map(b => `
+    <tr>
+      <td>${b.name}</td>
+      <td>${b.size_kb} KB</td>
+      <td>${b.modified}</td>
+      <td>
+        <button class="btn small secondary" onclick="window.open('/api/backup/${b.name}', '_blank')">⬇️ Lataa</button>
+        <button class="btn small danger" onclick="restoreBackupItem('${b.name}')">↩️ Palauta</button>
+      </td>
+    </tr>`).join('') || '<tr><td colspan="4" style="color:#999;">Ei varmuuskopioita vielä.</td></tr>';
+}
+
+async function createBackup() {
+  try { const d = await api('/api/backup', { method:'POST' }); msg(`Varmuuskopio luotu: ${d.name}`); loadBackups(); }
+  catch(e) { msg(e.message, false); }
+}
+
+const AUDIT_RECIPE_CATS = [
+  { key: 'dessert', label: '🍰 Jälkiruoat' },
+  { key: 'drink', label: '🥤 Juomat' },
+  { key: 'snack', label: '🍪 Välipalatuotteet' },
+  { key: 'side_only', label: '🥔 Pelkät lisäkkeet' },
+  { key: 'unknown', label: '❓ Epäselvät — tarkista itse' },
+];
+
+async function auditRecipesLoad() {
+  try {
+    const result = await api('/api/admin/audit-recipes');
+    const s = result.summary;
+    document.getElementById('auditRecipesSummary').innerHTML =
+      `<strong>${s.total}</strong> reseptiä tarkasteltu (keitot/salaatit ohitettu) — ` +
+      `jälkiruokia ${s.desserts}, juomia ${s.drinks}, välipaloja ${s.snacks}, ` +
+      `pelkkiä lisäkkeitä ${s.sides}, epäselviä ${s.unknown}.`;
+
+    const container = document.getElementById('auditRecipesCategories');
+    container.innerHTML = AUDIT_RECIPE_CATS.map(cat => {
+      const items = result.recipes[cat.key] || [];
+      if (!items.length) return '';
+      return `
+        <div class="card" style="margin-top:12px; background:#f7f9f8;">
+          <h3 style="font-size:14px; margin-bottom:8px;">${cat.label} (${items.length})</h3>
+          ${items.map(r => `
+            <label style="display:block; margin:4px 0;">
+              <input type="checkbox" value="${r.id}" class="audit-recipe-checkbox"> ${r.name_fi}
+            </label>`).join('')}
+        </div>`;
+    }).join('') || '<p class="hint">Ei tarkistettavaa — kaikki reseptit vaikuttavat pääruoilta.</p>';
+  } catch (e) { msg(e.message, false); }
+}
+
+async function auditRecipesDeleteSelected() {
+  const ids = Array.from(document.querySelectorAll('.audit-recipe-checkbox:checked')).map(cb => parseInt(cb.value));
+  if (!ids.length) { msg('Valitse vähintään yksi resepti', false); return; }
+  if (!confirm(`Poistetaanko ${ids.length} reseptiä? Tätä ei voi perua.\n\nJos jokin niistä on ruokalistan käytössä, se poistetaan myös sieltä — kyseinen suunnitelma pitää sen jälkeen uusia.`)) return;
+  try {
+    const d = await api('/api/admin/delete-recipes', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ recipe_ids: ids }) });
+    msg(d.message, true);
+    auditRecipesLoad();
+  } catch (e) { msg(e.message, false); }
+}
+
+async function generateRecoveryCode() {
+  const password = prompt('Vahvista nykyinen salasanasi:');
+  if (!password) return;
+  try {
+    const d = await api('/api/auth/recovery-code/generate', { method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({ password }) });
+    document.getElementById('recoveryCodeDisplay').textContent = d.recovery_code;
+    document.getElementById('recoveryModal').classList.add('open');
+  } catch(e) { msg(e.message, false); }
+}
+
+function copyRecoveryCode() {
+  const code = document.getElementById('recoveryCodeDisplay').textContent;
+  navigator.clipboard?.writeText(code).then(() => msg('Koodi kopioitu leikepöydälle'));
+}
+
+async function restoreBackupItem(name) {
+  if (!confirm(`Palautetaanko varmuuskopio "${name}"? Nykytilasta otetaan ensin turvakopio.`)) return;
+  try {
+    const d = await api('/api/backup/restore', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ name }) });
+    msg(`Palautettu: ${d.restored} (turvakopio: ${d.safety_copy})`);
+    loadBackups();
+  } catch(e) { msg(e.message, false); }
+}
+
+async function downloadBackupPackage() {
+  try {
+    const r = await fetch('/api/backup/download-package');
+    if (!r.ok) { const d = await r.json().catch(()=>({})); throw new Error(d.error || 'Paketin lataus epäonnistui'); }
+    const cd = r.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    const filename = m ? m[1] : `ruokalistasuunnittelija_backup_${new Date().toISOString().slice(0,10)}.zip`;
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    msg('Paketti ladattu: ' + filename);
+  } catch(e) { msg('Virhe: ' + e.message, false); }
+}
+
+// ---------- Health (Terveystarkistus, admin) ----------
+function healthFmtDate(iso) {
+  return iso ? new Date(iso).toLocaleString('fi-FI') : '—';
+}
+
+async function healthLoadDashboard() {
+  try {
+    const [status, db, backups, quality] = await Promise.all([
+      api('/api/health/status'), api('/api/health/database'),
+      api('/api/health/backups'), api('/api/health/quality'),
+    ]);
+    healthRenderStatus(status);
+    healthRenderDatabase(db);
+    healthRenderBackups(backups);
+    healthRenderQuality(quality);
+  } catch (e) {
+    document.getElementById('healthStatusContent').innerHTML =
+      '<p style="color:#c0392b">Tietojen haku epäonnistui: ' + e.message + '</p>';
+  }
+}
+
+function healthRenderStatus(data) {
+  const icon = data.status === 'ok' ? '🟢' : data.status === 'warning' ? '🟡' : '🔴';
+  const label = data.status === 'ok' ? 'JÄRJESTELMÄ OK'
+              : data.status === 'warning' ? 'VAROITUS' : 'KRIITTINEN VAROITUS';
+  const box = document.getElementById('healthStatusBox');
+  box.className = 'about-section about-box ' + (data.status === 'ok' ? 'ok'
+                  : data.status === 'warning' ? 'warn' : 'danger');
+  let html = `<h3 style="margin-top:0;">${icon} ${label}</h3>
+    <p>Sovellus käynnissä: <strong>${data.uptime_minutes} min</strong></p>
+    <p>Viimeisin tarkistus: ${healthFmtDate(data.last_check)}</p>`;
+  if (data.alerts.length) {
+    html += data.alerts.map(a => `<p>⚠️ ${a}</p>`).join('');
+  }
+  document.getElementById('healthStatusContent').innerHTML = html;
+}
+
+function healthRenderDatabase(db) {
+  const ingOk = db.recipes_without_ingredients === 0;
+  document.getElementById('healthDatabaseContent').innerHTML = `
+    <div class="stat"><div class="num">${db.size_mb} MB</div><div class="lbl">Tietokannan koko</div></div>
+    <div class="stat"><div class="num">${db.recipes_total}</div><div class="lbl">Reseptejä yhteensä</div></div>
+    <div class="stat"><div class="num">${db.recipes_from_poweresta}</div><div class="lbl">PoweRestasta tuotuja</div></div>
+    <div class="stat"><div class="num">${db.recipes_user_contributed}</div><div class="lbl">Käyttäjän lisäämiä</div></div>
+    <div class="stat"><div class="num" style="color:${ingOk ? '#5CB85C' : '#e0a800'}">${db.recipes_without_ingredients}</div><div class="lbl">Ilman raaka-aineita</div></div>
+    <div class="stat"><div class="num">${db.meal_plans_total}</div><div class="lbl">Ruokalistoja</div></div>
+    <div class="stat"><div class="num">${db.order_catalogs_total}</div><div class="lbl">Tilauslistoja luotu</div></div>
+    <div class="stat"><div class="num">${db.users_total}</div><div class="lbl">Käyttäjiä</div></div>
+  `;
+}
+
+function healthRenderBackups(b) {
+  if (!b.latest_backup) {
+    document.getElementById('healthBackupsContent').innerHTML =
+      `<p style="color:#c0392b">Yhtään varmuuskopiota ei ole vielä luotu.</p>
+       <p>Aikataulu: ${b.backup_schedule}</p>
+       <p>Seuraava automaattinen: ${healthFmtDate(b.next_automated_backup)}</p>`;
+    return;
+  }
+  const hrs = b.hours_since_last_backup;
+  const color = hrs < 48 ? '#5CB85C' : hrs < 7 * 24 ? '#e0a800' : '#c0392b';
+  document.getElementById('healthBackupsContent').innerHTML = `
+    <p>Viimeisin: <strong>${b.latest_backup.name}</strong> (${healthFmtDate(b.latest_backup.timestamp)})</p>
+    <p>Ikä: <strong style="color:${color}">${hrs} tuntia sitten</strong></p>
+    <p>Varmuuskopioita: ${b.backup_count} kpl, yhteensä ${b.total_backup_size_mb} MB</p>
+    <p>Aikataulu: ${b.backup_schedule}</p>
+    <p>Seuraava automaattinen: ${healthFmtDate(b.next_automated_backup)}</p>
+  `;
+}
+
+function healthRenderQuality(q) {
+  if (!q.warnings.length) {
+    document.getElementById('healthQualityContent').innerHTML =
+      '<p style="color:#5CB85C">✓ Ei havaittuja ongelmia.</p>';
+    return;
+  }
+  let html = q.warnings.map(w => `<p style="color:#e0a800">⚠️ ${w.description}</p>`).join('');
+  if (q.recipes_without_ingredients_sample && q.recipes_without_ingredients_sample.length) {
+    const names = q.recipes_without_ingredients_sample.map(r => r.name_fi).join(', ');
+    html += `<p class="hint">${names}${q.recipes_without_ingredients > q.recipes_without_ingredients_sample.length ? '…' : ''}</p>`;
+  }
+  document.getElementById('healthQualityContent').innerHTML = html;
+}
+
+async function healthCreateBackupNow() {
+  try {
+    const d = await api('/api/backup', { method: 'POST' });
+    msg('Varmuuskopio luotu: ' + d.name);
+    healthLoadDashboard();
+  } catch (e) { msg(e.message, false); }
+}
+
+async function healthRunIntegrityCheck() {
+  try {
+    msg('Tarkistetaan tietojen eheys...');
+    const r = await api('/api/health/integrity-check', { method: 'POST' });
+    if (r.errors_found === 0) {
+      msg(`✓ Tietokannan eheys OK (${r.scan_time_seconds}s)`);
+    } else {
+      msg(`Löytyi ${r.errors_found} ongelma(a): ${r.errors.join('; ')}`, false);
+    }
+  } catch (e) { msg(e.message, false); }
+}
+
+// ---------- Ingredient audit report ----------
+async function auditLoadDashboard() {
+  try {
+    const s = await api('/api/audit/ingredients/summary');
+    const pct = s.total_recipes ? Math.round(s.recipes_with_ingredients / s.total_recipes * 100) : 0;
+    document.getElementById('auditSummaryStats').innerHTML = `
+      <div class="stat"><div class="num">${s.total_recipes}</div><div class="lbl">Reseptejä yhteensä</div></div>
+      <div class="stat"><div class="num" style="color:#5CB85C">${s.recipes_with_ingredients}</div><div class="lbl">Raaka-aineilla ✓</div></div>
+      <div class="stat"><div class="num" style="color:#e0a800">${s.recipes_without_ingredients}</div><div class="lbl">Ilman raaka-aineita ✗</div></div>
+      <div class="stat"><div class="num">${pct}%</div><div class="lbl">Täydellisyys</div></div>
+    `;
+
+    const sourceSelect = document.getElementById('auditFilterSource');
+    const currentVal = sourceSelect.value;
+    const entries = Object.entries(s.breakdown_by_source);
+    sourceSelect.innerHTML = '<option value="">Kaikki lähteet</option>' +
+      entries.map(([key, v]) => `<option value="${key}">${v.label}</option>`).join('');
+    sourceSelect.value = currentVal;
+
+    document.getElementById('auditBreakdownRows').innerHTML = entries.map(([key, v]) => `
+      <tr>
+        <td>${v.label}</td>
+        <td style="text-align:center;">${v.total}</td>
+        <td style="text-align:center; color:#5CB85C;">${v.with_ingredients}</td>
+        <td style="text-align:center; color:#e0a800;">${v.without_ingredients}</td>
+        <td style="text-align:center;">${v.percentage_complete}%</td>
+      </tr>`).join('') || '<tr><td colspan="5" style="color:#999;">Ei reseptejä.</td></tr>';
+
+    auditLoadMissing();
+  } catch (e) { msg(e.message, false); }
+}
+
+async function auditLoadMissing() {
+  const params = new URLSearchParams();
+  const source = document.getElementById('auditFilterSource').value;
+  const category = document.getElementById('auditFilterCategory').value;
+  const season = document.getElementById('auditFilterSeason').value;
+  if (source) params.append('source', source);
+  if (category) params.append('category', category);
+  if (season) params.append('season', season);
+
+  try {
+    const d = await api('/api/audit/ingredients/missing?' + params.toString());
+    document.getElementById('auditMissingCount').textContent = d.count;
+    const list = document.getElementById('auditMissingList');
+    if (!d.recipes.length) {
+      list.innerHTML = '<p class="hint">Ei reseptejä näillä suodattimilla.</p>';
+      return;
+    }
+    list.innerHTML = d.recipes.map((r, i) => `
+      <div class="card" style="padding:10px 14px; margin-bottom:8px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+          <div>
+            <strong>${i + 1}. ${r.name_fi}</strong>
+            <div class="hint" style="margin-top:2px;">
+              ${CAT_NAMES[r.dish_category] || r.dish_category || '-'} ·
+              ${SEASON_NAMES[r.season] || r.season || '-'} · ${r.source_label}
+            </div>
+          </div>
+          <div style="display:flex; gap:6px;">
+            <button class="btn small secondary" onclick="showRecipeDetails(${r.id})">✏️ Muokkaa</button>
+            <button class="btn small" onclick="auditMarkComplete(${r.id})">✓ Valmis</button>
+          </div>
+        </div>
+      </div>`).join('');
+  } catch (e) { msg(e.message, false); }
+}
+
+function auditResetFilters() {
+  document.getElementById('auditFilterSource').value = '';
+  document.getElementById('auditFilterCategory').value = '';
+  document.getElementById('auditFilterSeason').value = '';
+  auditLoadMissing();
+}
+
+async function auditMarkComplete(recipeId) {
+  if (!confirm('Merkitäänkö resepti tarkistetuksi (ei tarvitse raaka-ainelistaa)?')) return;
+  try {
+    const d = await api(`/api/audit/ingredients/mark-complete/${recipeId}`, { method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({}) });
+    msg(d.message);
+    auditLoadDashboard();
+  } catch (e) { msg(e.message, false); }
+}
+
+function auditExport() {
+  const params = new URLSearchParams();
+  const source = document.getElementById('auditFilterSource').value;
+  const category = document.getElementById('auditFilterCategory').value;
+  const season = document.getElementById('auditFilterSeason').value;
+  if (source) params.append('source', source);
+  if (category) params.append('category', category);
+  if (season) params.append('season', season);
+  window.open('/api/audit/ingredients/export?' + params.toString(), '_blank');
+}
+
+async function loadAboutStats() {
+  const el = document.getElementById('aboutStats');
+  try {
+    const s = await api('/api/stats');
+    el.innerHTML = `
+      <div class="stat"><div class="num">${s.recipes_total}</div><div class="lbl">Reseptejä tietokannassa</div></div>
+      <div class="stat"><div class="num">${s.plans}</div><div class="lbl">Ruokalistoja luotu</div></div>
+      <div class="stat"><div class="num">${s.meal_slots_total}</div><div class="lbl">Ateriapaikkoja suunniteltu</div></div>
+      <div class="stat"><div class="num">${s.users_total}</div><div class="lbl">Käyttäjiä rekisteröity</div></div>
+      <div class="stat"><div class="num" style="font-size:15px;">${s.last_backup || 'Ei vielä'}</div><div class="lbl">Viimeisin varmuuskopio</div></div>
+    `;
+  } catch (e) {
+    el.innerHTML = '<p style="color:#c0392b">Tilastoja ei voitu ladata.</p>';
+  }
+}
+
+// init
+loadStats(); loadRecipes(); loadNewRecipes(); checkAdminNav();
+</script>
+</body>
+</html>

@@ -1,0 +1,36 @@
+# Tietokanta ja käyttäjädata (oikea data asuu %LOCALAPPDATA%\Ruokalistasuunnittelija\ - tämä on vain vanha/dev-kopio)
+meal_plans.db
+*.db
+*.db-journal
+
+# Varmuuskopiot ja viennit (generoitua sisältöä, ei koodia)
+varmuuskopiot/
+exports/
+
+# PyInstaller-käännöksen tulokset (rakennetaan .spec-tiedostosta uudelleen aina tarvittaessa)
+build/
+dist/
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Salaisuudet
+.secret_key
+
+# Lokit
+*.log
+server_stdout.log
+server_stderr.log
+
+# Editorit / käyttöjärjestelmä
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Claude Code -paikallisasetukset (konekohtaisia, ei projektin osa)
+.claude/
+.agents/

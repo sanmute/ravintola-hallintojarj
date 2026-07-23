@@ -1,0 +1,165 @@
+<!-- ============================================================
+  TILAUSLISTA-VÄLILEHTI  (order_catalog.py:n käyttöliittymä)
+
+  1) Lisää välilehtipainike muiden tabien viereen:
+     <button class="tab" onclick="showTab('katalogi')">🛒 Tilauslista</button>
+
+  2) Liitä tämä lohko muiden tab-sisältöjen joukkoon:
+============================================================= -->
+<div id="tab-katalogi" class="tab-content" style="display:none">
+  <h2>🛒 Viikon tilauslista</h2>
+  <p style="color:#666">Lista lasketaan viikon ruokalistan resepteistä.
+     Säädä tilattavia määriä varastotilanteen mukaan — säätösi säilyvät,
+     vaikka lista laskettaisiin uudelleen.</p>
+
+  <div style="display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; margin-bottom:1rem">
+    <label>Viikko:
+      <input type="number" id="katViikko" min="1" max="53" style="width:70px">
+    </label>
+    <button onclick="katGenerate()">🔄 Laske resepteistä</button>
+    <button onclick="katExport()">📥 Lataa Excel</button>
+    <span id="katInfo" style="color:#666"></span>
+  </div>
+
+  <table style="width:100%; border-collapse:collapse" id="katTable">
+    <thead>
+      <tr style="border-bottom:2px solid #5CB85C; text-align:left">
+        <th style="padding:.4rem">Tuote</th><th>Yksikkö</th>
+        <th>Laskettu</th><th>Tilattava määrä</th>
+        <th>Huomiot</th><th>Kerätty</th><th></th>
+      </tr>
+    </thead>
+    <tbody id="katBody"></tbody>
+  </table>
+
+  <div style="margin-top:1rem; display:flex; gap:.5rem; flex-wrap:wrap">
+    <input id="katUusiNimi" placeholder="Lisää tuote käsin...">
+    <input id="katUusiMaara" type="number" step="0.1" min="0" placeholder="Määrä" style="width:90px">
+    <input id="katUusiYksikko" placeholder="kg / l / pkt" style="width:90px">
+    <button onclick="katAddManual()">+ Lisää</button>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   TILAUSLISTA — logiikka. Olettaa, että sovelluksessa on:
+     api(url, options)  — fetch-kääre joka palauttaa JSONin
+     msg(text, ok)      — ilmoituspalkki
+     currentPlanId      — valitun ruokalistan id (muuttuja tai funktio)
+   Muuta katPlanId() palauttamaan oikea plan id omasta sovelluksestasi.
+============================================================= */
+let katCatalogId = null;
+
+function katPlanId() {
+  return (typeof currentPlanId !== 'undefined' && currentPlanId) ? currentPlanId : 1;
+}
+function katWeek() {
+  const v = parseInt(document.getElementById('katViikko').value);
+  return (v >= 1 && v <= 53) ? v : null;
+}
+
+async function katLoad() {
+  const week = katWeek();
+  if (!week) return;
+  const d = await api(`/api/catalog?plan_id=${katPlanId()}&week=${week}`);
+  katCatalogId = d.catalog ? d.catalog.id : null;
+  const body = document.getElementById('katBody');
+  body.innerHTML = '';
+  document.getElementById('katInfo').textContent = d.catalog
+    ? `${d.items.length} tuotetta — päivitetty ${d.catalog.updated_at}`
+    : 'Ei listaa tälle viikolle. Paina "Laske resepteistä".';
+  for (const it of d.items) {
+    const qty = it.adjusted_qty !== null ? it.adjusted_qty : (it.calculated_qty ?? 0);
+    const tr = document.createElement('tr');
+    tr.style.borderBottom = '1px solid #eee';
+    if (it.checked) tr.style.opacity = '0.45';
+    tr.innerHTML = `
+      <td style="padding:.35rem">${it.name}${it.manual ? ' <small>(käsin)</small>' : ''}</td>
+      <td>${it.unit || ''}</td>
+      <td style="color:#888">${it.calculated_qty ?? '—'}</td>
+      <td>
+        <button onclick="katStep(${it.id}, ${qty}, -1)">−</button>
+        <input type="number" step="0.1" min="0" value="${qty}"
+               style="width:75px; text-align:center;
+                      ${it.adjusted_qty !== null ? 'font-weight:bold; background:#f0f8f0' : ''}"
+               onchange="katSet(${it.id}, this.value)">
+        <button onclick="katStep(${it.id}, ${qty}, 1)">+</button>
+        ${it.adjusted_qty !== null && it.calculated_qty !== null
+          ? `<button title="Palauta laskettuun" onclick="katSet(${it.id}, null)">↺</button>` : ''}
+      </td>
+      <td><input value="${it.note || ''}" placeholder="huom."
+                 style="width:95%" onchange="katNote(${it.id}, this.value)"></td>
+      <td style="text-align:center">
+        <input type="checkbox" ${it.checked ? 'checked' : ''}
+               onchange="katCheck(${it.id}, this.checked)">
+      </td>
+      <td><button title="Poista rivi" onclick="katDelete(${it.id})">🗑</button></td>`;
+    body.appendChild(tr);
+  }
+}
+
+async function katGenerate() {
+  const week = katWeek();
+  if (!week) { msg('Anna viikkonumero', false); return; }
+  const d = await api('/api/catalog/generate', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({plan_id: katPlanId(), week})});
+  if (d.warning) msg(d.warning, false); else msg(`Tilauslista laskettu: ${d.items} tuotetta`);
+  katLoad();
+}
+
+/* step: nykyarvo + suunta; askel 0.5 alle 10:n määrille, muuten 1 */
+function katStep(id, current, dir) {
+  const step = current < 10 ? 0.5 : 1;
+  katSet(id, Math.max(0, Math.round((current + dir * step) * 10) / 10));
+}
+async function katSet(id, value) {
+  await api(`/api/catalog/item/${id}`, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({adjusted_qty: value === null || value === '' ? null : parseFloat(value)})});
+  katLoad();
+}
+async function katNote(id, note) {
+  await api(`/api/catalog/item/${id}`, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({note})});
+}
+async function katCheck(id, checked) {
+  await api(`/api/catalog/item/${id}`, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({checked})});
+  katLoad();
+}
+async function katDelete(id) {
+  await api(`/api/catalog/item/${id}`, {method: 'DELETE'});
+  katLoad();
+}
+async function katAddManual() {
+  const name = document.getElementById('katUusiNimi').value.trim();
+  if (!name) { msg('Anna tuotteen nimi', false); return; }
+  if (!katCatalogId) { msg('Laske lista ensin ("Laske resepteistä")', false); return; }
+  await api('/api/catalog/item', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      catalog_id: katCatalogId, name,
+      qty: parseFloat(document.getElementById('katUusiMaara').value) || 0,
+      unit: document.getElementById('katUusiYksikko').value.trim()})});
+  document.getElementById('katUusiNimi').value = '';
+  document.getElementById('katUusiMaara').value = '';
+  katLoad();
+}
+function katExport() {
+  const week = katWeek();
+  if (!week) { msg('Anna viikkonumero', false); return; }
+  window.location = `/api/catalog/export?plan_id=${katPlanId()}&week=${week}`;
+}
+
+/* Esitäytä kuluva viikko */
+(function () {
+  const now = new Date();
+  const jan4 = new Date(now.getFullYear(), 0, 4);
+  const week = Math.ceil((((now - jan4) / 86400000) + jan4.getDay() + 1) / 7);
+  const el = document.getElementById('katViikko');
+  if (el) { el.value = Math.min(Math.max(week, 1), 53); }
+})();
+</script>
