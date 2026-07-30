@@ -43,7 +43,6 @@ def _conn(db_path):
     return conn
 
 
-DEFAULT_SERVINGS = 4  # käytetään jos reseptillä ei ole annosmäärää tallennettuna
 
 
 def _ensure_tables(db_path):
@@ -104,15 +103,18 @@ def _aggregate_ingredients(conn, plan_id, week, target_servings=None):
     """Sum ingredient quantities for one week of a meal plan.
 
     target_servings: if given, each recipe's ingredient quantities are
-    scaled by target_servings / recipe's own servings count (falling back
-    to DEFAULT_SERVINGS when a recipe has no servings value saved) before
-    summing — recipes are written for whatever batch they were originally
-    portioned for (commonly 4-10), but the kitchen needs one consistent
+    scaled by target_servings / recipe's own servings count — recipes are
+    written for whatever batch they were originally portioned for (commonly
+    4-10, but some imported recipes are already bulk/production-batch sized
+    with no servings count saved), and the kitchen needs one consistent
     total for however many people are actually being served that week.
+    Recipes with no servings value are left unscaled (factor 1) rather than
+    guessed — assuming a small default like 4 for what's often already a
+    bulk recipe produced wildly inflated orders in practice.
 
     Returns (rows, missing_servings) — missing_servings is the sorted list
-    of distinct recipe names that had no servings value and so were scaled
-    using DEFAULT_SERVINGS as a guess.
+    of distinct recipe names that had no servings value and so were left
+    unscaled.
     """
     recipe_ids = _effective_recipe_ids(conn, plan_id, week)
     if not recipe_ids:
@@ -139,11 +141,14 @@ def _aggregate_ingredients(conn, plan_id, week, target_servings=None):
     sums = {}     # key -> running total (only from occurrences with a known quantity)
     has_known = set()
     for rid in recipe_ids:
-        if target_servings:
-            base = servings_by_recipe.get(rid) or DEFAULT_SERVINGS
-            factor = target_servings / base
-        else:
-            factor = 1
+        base = servings_by_recipe.get(rid)
+        # No guessed default here on purpose: many recipes without a saved
+        # servings count turned out to already be bulk/production-batch
+        # recipes (kg-scale ingredients), not small per-4-people ones —
+        # assuming 4 and scaling up produced wildly inflated orders (one
+        # real case: 7kg lettuce -> 245kg). Safer to leave them unscaled
+        # and flag them, than to guess and risk a 30x+ over-order.
+        factor = (target_servings / base) if (target_servings and base) else 1
         for ing in ing_by_recipe.get(rid, []):
             key = (ing['name'], ing['unit'] or '')
             if ing['quantity'] is None:
@@ -233,7 +238,8 @@ def init_order_catalog(app, db_path):
             resp['missing_servings'] = missing_servings
             resp['warning'] = (
                 f"{len(missing_servings)} reseptillä ei ole annosmäärää tallennettuna — "
-                f"niiden raaka-aineet skaalattiin olettaen {DEFAULT_SERVINGS} annosta: "
+                f"niiden raaka-aineita EI skaalattu (määrät ovat reseptin alkuperäisiä, "
+                f"tarkista tarvittaessa käsin): "
                 + ', '.join(missing_servings[:8]) + ('…' if len(missing_servings) > 8 else ''))
         return jsonify(resp)
 

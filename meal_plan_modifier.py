@@ -252,10 +252,15 @@ class MealModifier:
             meal_plan_id: ID of the meal plan
             week_number: Week number
             day_of_week: Weekday (0-4)
-            meal_type: Dish role — 'lounas' (main), 'keitto' (soup) or
-                'salaatti' (salad). Suggestions stay within the same role
-                (e.g. a soup slot only suggests other soups), not just the
-                same protein category.
+            meal_type: Dish role — 'lounas'/'lounas2' (main), 'keitto' (soup)
+                or 'salaatti' (salad). Suggestions stay within the same role
+                (e.g. a soup slot only suggests other soups) but, on a
+                manual short-notice swap, are NOT restricted to the current
+                dish's protein category (kala/kana/naudanliha/kasvis) —
+                the manager may need to swap a fish main for a chicken one
+                on short notice, same as soups/salads already allow any
+                category. The generator's own automatic weekly category
+                balance is unaffected; this only concerns manual swaps.
             exclude_recipes: List of recipe IDs to avoid
 
         Returns:
@@ -277,27 +282,15 @@ class MealModifier:
                 return []
 
             current_recipe_id = current[0]
-            current_recipe = self.db.get_recipe_details(current_recipe_id)
 
             if meal_type in ('keitto', 'salaatti'):
-                # Keitot ja salaatit kiertävät omissa, proteiinikategoriasta
-                # riippumattomissa kierroissaan (ks. meal_plan_generator) —
-                # minkä tahansa muun keiton/salaatin pitää siis kelvata
-                # vaihdoksi, ei vain samaa dish_category-arvoa. Käyttää
-                # eksplisiittistä recipe_type-saraketta, ei nimipohjaista
-                # arvausta (SOUP_KEYWORD/SALAD_KEYWORD poistettiin
-                # generaattorista samasta syystä).
-                c.execute('''SELECT id, name_fi FROM recipes
-                            WHERE recipe_type = ? AND id != ?
-                            ORDER BY name_fi''', (meal_type, current_recipe_id))
+                role_recipe_type = meal_type
             else:
-                # Pääruoka: pysy samassa proteiinikategoriassa (kala/kana/
-                # naudanliha/kasvis), koska generaattorin viikkokohtainen
-                # kategoriatasapaino nojaa juuri tähän.
-                c.execute('''SELECT id, name_fi FROM recipes
-                            WHERE recipe_type = 'pääruoka' AND dish_category = ? AND id != ?
-                            ORDER BY name_fi''',
-                         (current_recipe['dish_category'], current_recipe_id))
+                # 'lounas' or 'lounas2' — both are main-course slots.
+                role_recipe_type = 'pääruoka'
+            c.execute('''SELECT id, name_fi FROM recipes
+                        WHERE recipe_type = ? AND id != ?
+                        ORDER BY name_fi''', (role_recipe_type, current_recipe_id))
 
             suggestions = c.fetchall()
 

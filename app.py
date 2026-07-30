@@ -1442,7 +1442,7 @@ def create_plan():
             conn.commit()
         conn.close()
 
-        hoiva_generator = MealPlanGenerator(DB_PATH)
+        hoiva_generator = MealPlanGenerator(DB_PATH, facility='hoiva')
         plan_id = hoiva_generator.generate_weekend_extension(kesti_plan['id'], only_new=only_new)
         if not plan_id:
             return jsonify({'error': 'Hoivan la-su-suunnitelman luonti epäonnistui'}), 500
@@ -1454,7 +1454,7 @@ def create_plan():
                        'la-su generoitu erikseen. Mene Selaa & Muokkaa -välilehteen.',
         })
 
-    generator = MealPlanGenerator(DB_PATH, days_per_week=FACILITY_DAYS_PER_WEEK[facility])
+    generator = MealPlanGenerator(DB_PATH, days_per_week=FACILITY_DAYS_PER_WEEK[facility], facility=facility)
 
     if season == 'vuosi':
         # Älä hiljaa luo toista vuosisuunnitelmaa olemassa olevan rinnalle —
@@ -1583,9 +1583,6 @@ WEEKDAY_LABELS = ['Ma', 'Ti', 'Ke', 'To', 'Pe', 'La', 'Su']  # kesti käyttää 
 # Kesti: perjantai (oma pohja ei näytä sitä, mutta rivi tallennetaan silti).
 # Hoiva: sunnuntai — vahvistettu asukas-pohjan JÄLKIRUOKA-rivistä.
 DESSERT_DAY_BY_FACILITY = {'kesti': 4, 'hoiva': 6, 'kymenkartano': 6}
-# Käytetään ainesosien skaalauksessa (tilauslista/kespro/valmistusohjeet)
-# kun reseptillä ei ole annosmäärää tallennettuna.
-DEFAULT_SERVINGS = 4
 
 
 def _mirrored_day_error(conn, plan_id, day_of_week):
@@ -2047,13 +2044,16 @@ def export_instructions_pdf(plan_id):
         if not (0 <= weekday < days_per_week):
             continue
         rr = recipes_by_id[r['recipe_id']]
-        if target_servings:
-            base = rr['servings'] or DEFAULT_SERVINGS
-            if not rr['servings']:
-                missing_servings.add(rr['name_fi'])
-            factor = target_servings / base
+        # Ei oletusarvoa puuttuvalle annosmäärälle: monet reseptit ilman
+        # annosmäärää osoittautuivat jo valmiiksi tuotantoerän kokoisiksi
+        # (kg-mittakaavan raaka-aineita), joten oletus "4 annosta" ja siitä
+        # ylöspäin skaalaus tuotti järjettömän suuria tilausmääriä käytännössä.
+        if target_servings and rr['servings']:
+            factor = target_servings / rr['servings']
         else:
             factor = 1
+            if target_servings and not rr['servings']:
+                missing_servings.add(rr['name_fi'])
         ingredients = [{'name_fi': ing['name_fi'],
                         'quantity': round(ing['quantity'] * factor, 3) if ing['quantity'] is not None else None,
                         'unit': ing['unit']}
@@ -2078,7 +2078,7 @@ def export_instructions_pdf(plan_id):
     message = f'Valmistusohjeet tallennettu Lataukset-kansioon: {download_name}'
     if missing_servings:
         message += (f' — huom: {len(missing_servings)} reseptillä ei annosmäärää, '
-                    f'skaalattu olettaen {DEFAULT_SERVINGS} annosta: ' +
+                    f'niiden raaka-aineita EI skaalattu: ' +
                     ', '.join(sorted(missing_servings)[:8]) +
                     ('…' if len(missing_servings) > 8 else ''))
     return jsonify({
@@ -2148,17 +2148,19 @@ def export_kespro(plan_id):
     # Aggregated ingredient quantities (when recipes have linked ingredients),
     # scaled per recipe to target_servings if given — recipes are written
     # for whatever batch they were originally portioned for (commonly
-    # 4-10 servings), not the restaurant's actual daily headcount.
+    # 4-10 servings), not the restaurant's actual daily headcount. Recipes
+    # with no servings value are left unscaled (factor 1): many turned out
+    # to already be bulk/production-batch sized (kg-scale ingredients), and
+    # assuming a small default like 4 produced wildly inflated orders.
     missing_servings = set()
     agg = defaultdict(lambda: {'total': 0.0, 'unit': '', 'has_qty': False})
     for rid in recipe_id_list:
-        if target_servings:
-            base = recipe_info[rid]['servings'] or DEFAULT_SERVINGS
-            if not recipe_info[rid]['servings']:
-                missing_servings.add(recipe_info[rid]['name_fi'])
-            factor = target_servings / base
+        if target_servings and recipe_info[rid]['servings']:
+            factor = target_servings / recipe_info[rid]['servings']
         else:
             factor = 1
+            if target_servings and not recipe_info[rid]['servings']:
+                missing_servings.add(recipe_info[rid]['name_fi'])
         for ing in ing_by_recipe.get(rid, []):
             key = (ing['name_fi'], ing['unit'])
             if ing['quantity'] is not None:
@@ -2177,7 +2179,7 @@ def export_kespro(plan_id):
     ws['A2'] = f'Luotu: {datetime.now().strftime("%d.%m.%Y %H:%M")}{servings_note}'
     if missing_servings:
         ws['A3'] = (f'Huom: {len(missing_servings)} reseptillä ei annosmäärää — '
-                    f'skaalattu olettaen {DEFAULT_SERVINGS} annosta: ' +
+                    f'niiden raaka-aineita EI skaalattu: ' +
                     ', '.join(sorted(missing_servings)[:8]) +
                     ('…' if len(missing_servings) > 8 else ''))
 

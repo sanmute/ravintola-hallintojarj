@@ -14,14 +14,30 @@ class MealPlanGenerator:
     SOUP_MIN_GAP_WEEKS = 2   # don't repeat the same soup within 2 calendar weeks
     DAYS_PER_WEEK = 5        # Ma-Pe — each weekday gets its own soup+main+salad
     MAIN_CATEGORY_CAP_PER_WEEK = 2  # no protein category more than 2x among the week's 5 mains
+    CYCLE_WEEKS = 6          # a year plan generates this many unique weeks per season,
+                             # then repeats them for the rest of that season's calendar
+                             # weeks — a fixed repeating menu cycle, as real institutional
+                             # catering typically runs, instead of 13 fully unique weeks.
 
-    def __init__(self, db_path='meal_plans.db', days_per_week=None):
+    # Kesti's Friday salad is always this fixed buffet line (confirmed from
+    # the restaurant's real weekly menu, e.g. "BATAATTISOSEKEITTO / VÄRIKÄS
+    # JA RAIKAS SALAATTIBUFFET / AURAJUUSTOPOSSUA...") rather than whatever
+    # the normal salad rotation would have picked. Hoiva inherits this for
+    # free since its ma-pe mirrors Kesti live; Kymenkartano is unaffected
+    # (fully independent plan, not in scope here).
+    FRIDAY_SALAD_NAME = 'Värikäs ja raikas salaattibuffet'
+
+    def __init__(self, db_path='meal_plans.db', days_per_week=None, facility='kesti'):
         """days_per_week: overrides the class default (5, Ma-Pe) — kesti stays
         5, hoiva and kymenkartano use 7 (Ma-Su), each generated separately
-        from the same shared recipe pool."""
+        from the same shared recipe pool.
+        facility: only used to decide whether the fixed Friday-salad rule
+        (see FRIDAY_SALAD_NAME) applies — that rule is Kesti-only."""
         self.db = MealPlanDB(db_path)
+        self.facility = facility
         if days_per_week is not None:
             self.DAYS_PER_WEEK = days_per_week
+        self._friday_salad = None  # lazily created/looked up, cached per instance
         self.max_repetition_per_cycle = 2  # Max 2x per 4-week cycle
         self.cycle_length = 7  # 7 days per week
         self.weeks_per_cycle = 4
@@ -60,6 +76,34 @@ class MealPlanGenerator:
         idx = self._salad_rotation[season] % len(salads)
         self._salad_rotation[season] += 1
         return salads[idx]
+
+    def _get_friday_salad(self):
+        """Look up (or create, on first use) the fixed Friday-buffet recipe.
+        Cached on the instance since it's the same row for every Friday of
+        every week generated in one call."""
+        if self._friday_salad is not None:
+            return self._friday_salad
+        import sqlite3
+        conn = sqlite3.connect(self.db.db_path)
+        row = conn.execute('SELECT id, name_fi, dish_category, recipe_type FROM recipes WHERE name_fi = ?',
+                          (self.FRIDAY_SALAD_NAME,)).fetchone()
+        conn.close()
+        if row:
+            self._friday_salad = tuple(row)
+            return self._friday_salad
+        recipe_id = self.db.add_recipe(
+            name_fi=self.FRIDAY_SALAD_NAME, season='kaikki', meal_type='lounas',
+            dish_category='kasvis', recipe_type='salaatti')
+        if recipe_id is None:
+            # Name already existed after all (e.g. inserted moments ago) —
+            # re-fetch instead of trusting a None id.
+            conn = sqlite3.connect(self.db.db_path)
+            row = conn.execute('SELECT id, name_fi, dish_category, recipe_type FROM recipes WHERE name_fi = ?',
+                              (self.FRIDAY_SALAD_NAME,)).fetchone()
+            conn.close()
+            recipe_id = row[0]
+        self._friday_salad = (recipe_id, self.FRIDAY_SALAD_NAME, 'kasvis', 'salaatti')
+        return self._friday_salad
 
     def _split_soups(self, recipe_pool):
         """Split a recipe pool into (mains, soups), using the explicit
@@ -226,8 +270,14 @@ class MealPlanGenerator:
                     soup = self._select_soup(soup_pool, absolute_week)
                     assignments.append((week_num, weekday, soup[0], 'keitto'))
 
-                # Salad — independent pick, own rotation
-                if salad_pool:
+                # Salad — independent pick, own rotation. Kesti's Friday is
+                # always the fixed buffet line instead of the rotated pick
+                # (doesn't consume a turn from the rotation — Mon-Thu keep
+                # cycling through the real pool at their own pace).
+                if self.facility == 'kesti' and weekday == 4:
+                    salad = self._get_friday_salad()
+                    assignments.append((week_num, weekday, salad[0], 'salaatti'))
+                elif salad_pool:
                     salad = self._select_salad(salad_pool, season)
                     assignments.append((week_num, weekday, salad[0], 'salaatti'))
 
@@ -341,16 +391,53 @@ class MealPlanGenerator:
         ('talvi', 49, 52),   # Dec
     ]
 
+    def _season_calendar_weeks(self):
+        """Map each season to its full chronological list of calendar week
+        numbers, merging talvi's two YEAR_SEGMENTS chunks (1-9 and 49-52)
+        into one continuous 13-week run (talvi wraps the calendar year but
+        is conceptually a single season)."""
+        season_weeks = {}
+        for season, start_week, end_week in self.YEAR_SEGMENTS:
+            season_weeks.setdefault(season, []).extend(range(start_week, end_week + 1))
+        return season_weeks
+
+    def _generate_cycling_year_assignments(self, only_new=False, day_indices=None):
+        """Yield (actual_week, day_num, recipe_id, meal_type) for a full
+        52-week calendar year, one season at a time: generates CYCLE_WEEKS
+        (6) unique weeks from that season's recipe pool, then repeats that
+        block to fill however many calendar weeks the season actually spans
+        (13 for each of the 4 seasons) — e.g. weeks 1-6 get fresh content,
+        week 7 repeats week 1, week 8 repeats week 2, and so on. This is a
+        fixed repeating menu cycle, same as real institutional catering
+        typically runs, rather than 13 fully unique weeks per season.
+        """
+        for season, week_numbers in self._season_calendar_weeks().items():
+            pool = self._get_season_pool(season, only_new=only_new)
+            print(f"\n🍂 Kausi {season}: {len(week_numbers)} kalenteriviikkoa, "
+                  f"{self.CYCLE_WEEKS} viikon kiertävä ruokalista ({len(pool)} reseptiä)")
+
+            assignments = self._generate_assignments(pool, self.CYCLE_WEEKS, season,
+                                                      day_indices=day_indices)
+            by_cycle_week = defaultdict(list)
+            for week_num, day_num, recipe_id, meal_type in assignments:
+                by_cycle_week[week_num].append((day_num, recipe_id, meal_type))
+
+            for i, actual_week in enumerate(week_numbers):
+                cycle_week = (i % self.CYCLE_WEEKS) + 1
+                for day_num, recipe_id, meal_type in by_cycle_week.get(cycle_week, []):
+                    yield actual_week, day_num, recipe_id, meal_type
+
     def generate_year_plan(self, start_date=None, only_new=False, facility='kesti'):
         """
         Generate a full 52-week plan split into 4 seasonal themes
         following the calendar: talvi (1-9, 49-52), kevät (10-22),
         kesä (23-35), syksy (36-48).
 
-        Each segment draws only from that season's recipe pool
-        (plus year-round 'kaikki' recipes). Repetition constraint
-        applies within each 4-week cycle as usual. Every weekday gets
-        its own main dish + soup + salad.
+        Each season generates only CYCLE_WEEKS (6) unique weeks from that
+        season's recipe pool (plus year-round 'kaikki' recipes), then
+        repeats that block for the rest of the season's calendar weeks —
+        a fixed repeating menu cycle. Every weekday gets its own main dish
+        + soup + salad.
 
         only_new: restrict to hand-added/edited recipes only, excluding
         bulk PoweResta/OCR/scrape imports.
@@ -374,25 +461,12 @@ class MealPlanGenerator:
         meal_plan_id = self.db.create_meal_plan(plan_name, 'vuosi', 52, facility=facility)
 
         total = 0
-        for season, start_week, end_week in self.YEAR_SEGMENTS:
-            pool = self._get_season_pool(season, only_new=only_new)
-            seg_weeks = end_week - start_week + 1
-            print(f"\n🍂 Kausi {season}: viikot {start_week}-{end_week} ({len(pool)} reseptiä)")
+        for actual_week, day_num, recipe_id, meal_type in self._generate_cycling_year_assignments(only_new):
+            self.db.add_meal_to_plan(meal_plan_id, actual_week, day_num, recipe_id, meal_type)
+            total += 1
 
-            assignments = self._generate_assignments(
-                pool, seg_weeks, season,
-                week_offset=start_week - 1
-            )
-            for week_num, day_num, recipe_id, meal_type in assignments:
-                self.db.add_meal_to_plan(
-                    meal_plan_id,
-                    start_week + week_num - 1,   # offset into the year
-                    day_num, recipe_id,
-                    meal_type
-                )
-            total += len(assignments)
-
-        print(f"\n✅ Vuosisuunnitelma valmis: {total} ateriaa, ID {meal_plan_id}")
+        print(f"\n✅ Vuosisuunnitelma valmis ({self.CYCLE_WEEKS} viikon kiertävä ruokalista per kausi): "
+              f"{total} ateriaa, ID {meal_plan_id}")
         return meal_plan_id
 
     WEEKEND_DAYS = (5, 6)  # La, Su — the only days Hoiva ever stores itself
@@ -433,16 +507,10 @@ class MealPlanGenerator:
 
         total = 0
         if season == 'vuosi':
-            for seg_season, start_week, end_week in self.YEAR_SEGMENTS:
-                pool = self._get_season_pool(seg_season, only_new=only_new)
-                seg_weeks = end_week - start_week + 1
-                assignments = self._generate_assignments(
-                    pool, seg_weeks, seg_season,
-                    week_offset=start_week - 1, day_indices=self.WEEKEND_DAYS)
-                for week_num, day_num, recipe_id, meal_type in assignments:
-                    self.db.add_meal_to_plan(
-                        hoiva_plan_id, start_week + week_num - 1, day_num, recipe_id, meal_type)
-                total += len(assignments)
+            for actual_week, day_num, recipe_id, meal_type in \
+                    self._generate_cycling_year_assignments(only_new, day_indices=self.WEEKEND_DAYS):
+                self.db.add_meal_to_plan(hoiva_plan_id, actual_week, day_num, recipe_id, meal_type)
+                total += 1
         else:
             pool = self._get_season_pool(season, only_new=only_new)
             assignments = self._generate_assignments(

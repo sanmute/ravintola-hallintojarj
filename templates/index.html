@@ -966,8 +966,10 @@ Kiehauta vesi. Lisää liemikuutiot..."></textarea>
   <div class="modal">
     <h3>Vaihda ateria</h3>
     <p id="changeCurrent" style="font-size:14px; margin-bottom:8px;"></p>
-    <label>Uusi resepti (sama kategoria)</label>
-    <select id="changeNewRecipe"></select>
+    <label>Uusi resepti</label>
+    <input id="changeRecipeSearch" placeholder="🔍 Hae nimestä…" oninput="renderChangeRecipeOptions()" style="margin-bottom:6px;">
+    <select id="changeNewRecipe" size="8" style="width:100%;"></select>
+    <div class="hint" id="changeRecipeCount" style="margin-bottom:8px;"></div>
     <label>Syy vaihdolle</label>
     <select id="changeReason">
       <option>Toimitusongelma / raaka-ainepuute</option>
@@ -1407,8 +1409,9 @@ const guideArticles = [
       <h2>Selaa &amp; muokkaa</h2>
       <p>Selaa valmista ruokalistaa viikko kerrallaan; jokainen arkipäivä näyttää oman keitto-, pääruoka- ja
       salaattirivinsä.</p>
-      <p><strong>Aterian vaihtaminen:</strong> klikkaa mitä tahansa ateriaa nähdäksesi korvaavat ehdotukset
-      (samasta kategoriasta/tyypistä). Valitse uusi resepti — "vain käsin valittavat" reseptit ovat myös
+      <p><strong>Aterian vaihtaminen:</strong> klikkaa mitä tahansa ateriaa nähdäksesi korvaavat ehdotukset —
+      mikä tahansa resepti samasta roolista (pääruoka/keitto/salaatti) kelpaa, riippumatta proteiinikategoriasta
+      (kala/kana/liha/kasvis). Valitse uusi resepti — "vain käsin valittavat" reseptit ovat myös
       valittavissa täällä, vaikka generaattori ei niitä itse ehdota. Muutos tallentuu heti ja kirjautuu
       <strong>muutoslokiin</strong> (kuka vaihtoi, mitä ja miksi).</p>
       <p><strong>Viikkomenu (PDF/Word):</strong> tuottaa tulostettavan, brändätyn viikkomenun asiakkaille tai
@@ -2682,15 +2685,29 @@ async function saveFridayDessert(week, day) {
   } catch (e) { msg(e.message, false); }
 }
 
+let changeRecipeOptions = [];  // full {id, name} list for the currently open swap — filtered live by search
+
+function renderChangeRecipeOptions() {
+  const q = document.getElementById('changeRecipeSearch').value.trim().toLowerCase();
+  const matches = q ? changeRecipeOptions.filter(o => o.name.toLowerCase().includes(q)) : changeRecipeOptions;
+  const select = document.getElementById('changeNewRecipe');
+  const emptyText = changeRecipeOptions.length ? 'Ei osumia haulle' : 'Ei vaihtoehtoja';
+  select.innerHTML = matches.length
+    ? matches.map(o => `<option value="${o.id}">${o.name}</option>`).join('')
+    : `<option value="">${emptyText}</option>`;
+  document.getElementById('changeRecipeCount').textContent =
+    changeRecipeOptions.length ? `${matches.length} / ${changeRecipeOptions.length} vaihtoehtoa` : '';
+}
+
 async function openChange(day, role, recipeId, name) {
   changeCtx = { week: currentWeek, day, role };
   const mealType = ROLE_MEAL_TYPE[role];
   document.getElementById('changeCurrent').innerHTML =
     `Viikko <b>${currentWeek}</b>, ${WEEKDAY_NAMES[day] ?? day} — ${ROLE_LABELS[role]}: nykyinen ruoka <b>${name}</b>`;
+  document.getElementById('changeRecipeSearch').value = '';
   const sugg = await api(`/api/plans/${currentPlanId}/suggestions?week=${currentWeek}&slot=${day}&meal_type=${mealType}`);
-  document.getElementById('changeNewRecipe').innerHTML =
-    sugg.map(s => `<option value="${s.id}">${s.name}</option>`).join('') ||
-    `<option value="">Ei ehdotuksia samasta kategoriasta (${ROLE_LABELS[role].toLowerCase()})</option>`;
+  changeRecipeOptions = sugg.map(s => ({ id: s.id, name: s.name }));
+  renderChangeRecipeOptions();
   document.getElementById('changeModal').classList.add('open');
 }
 
@@ -2723,9 +2740,10 @@ async function addSecondMain(day) {
   changeCtx = { week: currentWeek, day, role: 'main2', addingSecondMain: true };
   document.getElementById('changeCurrent').innerHTML =
     `Viikko <b>${currentWeek}</b>, ${WEEKDAY_NAMES[day] ?? day} — lisää toinen pääruoka vaihtoehdoksi`;
+  document.getElementById('changeRecipeSearch').value = '';
   const mains = await api('/api/recipes').then(rs => rs.filter(r => r.recipe_type === 'pääruoka'));
-  document.getElementById('changeNewRecipe').innerHTML =
-    mains.map(r => `<option value="${r.id}">${r.name_fi}</option>`).join('');
+  changeRecipeOptions = mains.map(r => ({ id: r.id, name: r.name_fi }));
+  renderChangeRecipeOptions();
   document.getElementById('changeModal').classList.add('open');
 }
 
