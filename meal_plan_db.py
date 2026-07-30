@@ -104,13 +104,16 @@ class MealPlanDB:
     
     def add_recipe(self, name_fi, season, meal_type, dish_category,
                    ingredients=None, nutrition=None, prep_time_min=None,
-                   difficulty=None, source_url=None, notes=None, servings=None):
+                   difficulty=None, source_url=None, notes=None, servings=None,
+                   recipe_type=None, instructions=None):
         """Add a recipe to the database"""
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
 
         cols = [r[1] for r in c.execute('PRAGMA table_info(recipes)').fetchall()]
         has_servings = 'servings' in cols
+        has_recipe_type = 'recipe_type' in cols
+        has_instructions = 'instructions' in cols
 
         try:
             if has_servings:
@@ -135,8 +138,14 @@ class MealPlanDB:
                           json.dumps(nutrition) if nutrition else None,
                           prep_time_min, difficulty, source_url, notes,
                           datetime.now().isoformat()))
-            conn.commit()
             recipe_id = c.lastrowid
+            if has_recipe_type and recipe_type:
+                c.execute('UPDATE recipes SET recipe_type = ? WHERE id = ?',
+                          (recipe_type, recipe_id))
+            if has_instructions and instructions:
+                c.execute('UPDATE recipes SET instructions = ? WHERE id = ?',
+                          (instructions, recipe_id))
+            conn.commit()
             return recipe_id
         except sqlite3.IntegrityError:
             print(f"Recipe '{name_fi}' already exists")
@@ -239,14 +248,20 @@ class MealPlanDB:
         conn.close()
         return recipes
     
-    def create_meal_plan(self, name, season, num_weeks=52):
+    def create_meal_plan(self, name, season, num_weeks=52, facility='kesti'):
         """Create a new meal plan"""
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
-        
-        c.execute('''INSERT INTO meal_plans (name, season, start_date, num_weeks)
-                    VALUES (?, ?, ?, ?)''',
-                 (name, season, datetime.now().date(), num_weeks))
+
+        cols = [r[1] for r in c.execute('PRAGMA table_info(meal_plans)').fetchall()]
+        if 'facility' in cols:
+            c.execute('''INSERT INTO meal_plans (name, season, start_date, num_weeks, facility)
+                        VALUES (?, ?, ?, ?, ?)''',
+                     (name, season, datetime.now().date(), num_weeks, facility))
+        else:
+            c.execute('''INSERT INTO meal_plans (name, season, start_date, num_weeks)
+                        VALUES (?, ?, ?, ?)''',
+                     (name, season, datetime.now().date(), num_weeks))
         conn.commit()
         meal_plan_id = c.lastrowid
         conn.close()

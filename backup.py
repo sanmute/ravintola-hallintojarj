@@ -1,17 +1,17 @@
 """
 backup.py — Varmuuskopiot Ruokalistasuunnittelijalle.
 
-Käyttöönotto app.py:ssä (init_auth:in JÄLKEEN):
+Käyttöönotto app.py:ssä:
 
     from backup import init_backup
     init_backup(app, DB_PATH)
 
 Reitit:
-  POST /api/backup                     — luo aikaleimatun varmuuskopion (admin)
-  GET  /api/backup                     — listaa varmuuskopiot (admin)
-  GET  /api/backup/<name>              — lataa varmuuskopio tiedostona (admin)
-  POST /api/backup/restore             — palauta varmuuskopio {"name": "..."} (admin)
-  GET  /api/backup/download-package    — lataa koko sovellus + data ZIP-pakettina (admin)
+  POST /api/backup                     — luo aikaleimatun varmuuskopion
+  GET  /api/backup                     — listaa varmuuskopiot
+  GET  /api/backup/<name>              — lataa varmuuskopio tiedostona
+  POST /api/backup/restore             — palauta varmuuskopio {"name": "..."}
+  GET  /api/backup/download-package    — lataa koko sovellus + data ZIP-pakettina
 
 Käyttää sqlite3:n omaa backup-API:a, joten kopio on eheä myös
 kun sovellus on käytössä. Vanhat kopiot siivotaan automaattisesti
@@ -33,8 +33,6 @@ import tempfile
 from datetime import datetime
 
 from flask import jsonify, request, send_file
-
-from auth import role_required
 
 _NAME_RE = re.compile(r'^meal_plans_\d{8}_\d{6}\.db$')
 
@@ -59,13 +57,11 @@ _ASENNA_TXT = """RUOKALISTASUUNNITTELIJA — ASENNUS JA KÄYTTÖÖNOTTO
 
 2. SOVELLUKSEN KÄYNNISTÄMINEN
    - Kaksoisklikkaa "Ruokalistasuunnittelija.exe"
-   - Sovellus avautuu selainikkunaan
-   - Kirjaudu sisään (oletustunnukset: admin / vaihda123 — ellei niitä ole jo vaihdettu)
-   - MUUTA SALASANA HETI, jos kirjaudut oletustunnuksilla!
+   - Sovellus avautuu selainikkunaan, suoraan pääsivulle
 
 3. TIETOKANNAN PALAUTUS
    - Sovellus käyttää automaattisesti mukana olevaa "meal_plans.db"-tietokantaa
-   - Kaikki reseptit, ruokalistat ja käyttäjät ovat siihen tallennettuina
+   - Kaikki reseptit ja ruokalistat ovat siihen tallennettuina
    - Älä kopioi tai muuta meal_plans.db-tiedostoa muuten kuin varmuuskopioiden kautta
 
 4. USEALTA KONEELTA KÄYTTÖ
@@ -74,7 +70,6 @@ _ASENNA_TXT = """RUOKALISTASUUNNITTELIJA — ASENNUS JA KÄYTTÖÖNOTTO
    - (Esim. http://keittiokone:5001)
 
 5. PÄIVITTÄINEN VARMUUSKOPIOINTI
-   - Kirjaudu sisään admin-tunnuksella
    - Avaa "Hallinto"-välilehti → Varmuuskopiot
    - Klikkaa "Luo varmuuskopio" päivittäin
    - Lataa väliajoin myös koko järjestelmän ZIP-paketti ("Lataa koko sovellus
@@ -94,7 +89,7 @@ Jos sovellus kaatuu tai tietokanta vioittuu:
    - Käynnistä sovellus uudelleen
 
 2. PALAUTUS VARMUUSKOPIOISTA SOVELLUKSEN SISÄLLÄ
-   - Avaa sovellus admin-tunnuksella
+   - Avaa sovellus
    - Mene "Hallinto" → "Varmuuskopiot"
    - Valitse vanha varmuuskopio listasta
    - Klikkaa "Palauta"
@@ -113,7 +108,7 @@ Jos sovellus kaatuu tai tietokanta vioittuu:
    - Pura uudelle koneelle
    - Sovellus käynnistyy täydellä datalla
 
-HUOMIO: meal_plans.db sisältää kaiken — reseptit, ruokalistat, käyttäjätunnukset.
+HUOMIO: meal_plans.db sisältää kaiken — reseptit ja ruokalistat.
 Varmuuskopioi se säännöllisesti!
 """
 
@@ -132,23 +127,19 @@ YLEISIÄ ONGELMIA:
    - Tarkista palomuuri: sallitaan portti 5001
    - Käynnistä sovellus uudelleen
 
-3. "Salasana unohtunut"
-   - Ota yhteys ylläpitäjään (ei voi nollata ilman tietokantaan pääsyä)
-   - Tai palauta vanhasta varmuuskopiosta ja aseta uusi salasana
-
-4. "Tietokanta vioittunut" (sovellus kaatuu)
+3. "Tietokanta vioittunut" (sovellus kaatuu)
    - Palauta varmuuskopioista (ks. PALAUTUS.txt)
 
-5. "Muista koneista ei pääse sisään"
+4. "Muista koneista ei pääse sisään"
    - Tarkista, että palvelinkone on päällä
    - Tarkista koneen osoite: http://<koneen-nimi>:5001
    - Tarkista palomuuri: sallitaan paikallisen verkon liikenne portissa 5001
 
-6. "Excel-tuonti ei toimi"
+5. "Excel-tuonti ei toimi"
    - Tarkista tiedoston muoto (täytyy olla PoweResta-muotoinen .xlsx)
    - Tarkista, että Excelin välilehdet alkavat "Nimi"-rivillä
 
-7. "OCR-tuonti on hidas"
+6. "OCR-tuonti on hidas"
    - Se on normaalia — kuvasta lukeminen kestää
    - Odota kunnes kaikki kuvat on käsitelty ennen selaimen sulkemista
 
@@ -181,13 +172,11 @@ def init_backup(app, db_path, backup_dir=None, keep=30):
     backup_dir = backup_dir or os.path.join(os.path.dirname(db_path), 'varmuuskopiot')
 
     @app.route('/api/backup', methods=['POST'])
-    @role_required('admin')
     def backup_create():
         name = _do_backup(db_path, backup_dir, keep)
         return jsonify({'ok': True, 'name': name})
 
     @app.route('/api/backup')
-    @role_required('admin')
     def backup_list():
         os.makedirs(backup_dir, exist_ok=True)
         items = []
@@ -201,14 +190,12 @@ def init_backup(app, db_path, backup_dir=None, keep=30):
         return jsonify(items)
 
     @app.route('/api/backup/<name>')
-    @role_required('admin')
     def backup_download(name):
         if not _NAME_RE.match(name):
             return jsonify({'error': 'Virheellinen tiedostonimi'}), 400
         return send_file(os.path.join(backup_dir, name), as_attachment=True)
 
     @app.route('/api/backup/restore', methods=['POST'])
-    @role_required('admin')
     def backup_restore():
         name = (request.get_json(force=True) or {}).get('name', '')
         if not _NAME_RE.match(name):
@@ -221,8 +208,55 @@ def init_backup(app, db_path, backup_dir=None, keep=30):
         shutil.copy2(src, db_path)
         return jsonify({'ok': True, 'restored': name, 'safety_copy': safety})
 
+    @app.route('/api/backup/restore-upload', methods=['POST'])
+    def backup_restore_upload():
+        """Palauta tietokanta käyttäjän koneelta ladatusta .db-tiedostosta
+        (esim. USB-tikulta tai toiselta koneelta) — eroaa /api/backup/restore
+        siinä, että lähde ei ole jo palvelimella oleva varmuuskopio.
+        Validoi ensin että tiedosto on aidosti käyttökelpoinen
+        Ruokalistasuunnittelija-tietokanta ennen ylikirjoitusta, ja ottaa
+        turvakopion nykytilasta ennen palautusta, aivan kuten tavallinen
+        palautuskin."""
+        if 'file' not in request.files or not request.files['file'].filename:
+            return jsonify({'error': 'Valitse .db-tiedosto'}), 400
+        f = request.files['file']
+        if not f.filename.lower().endswith('.db'):
+            return jsonify({'error': 'Tiedoston pitää olla .db-muotoinen'}), 400
+
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix='.db')
+        os.close(tmp_fd)
+        f.save(tmp_path)
+
+        # Yhteys PITÄÄ sulkea ennen os.remove():a — Windows ei salli avoimena
+        # olevan tiedoston poistoa, mikä aiemmin aiheutti PermissionErrorin
+        # joka peitti alkuperäisen, käyttäjälle näytettävän virheilmoituksen.
+        tables = None
+        test_conn = sqlite3.connect(tmp_path)
+        try:
+            tables = {r[0] for r in test_conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        except sqlite3.DatabaseError:
+            pass
+        finally:
+            test_conn.close()
+
+        if tables is None:
+            os.remove(tmp_path)
+            return jsonify({'error': 'Tiedosto ei ole kelvollinen SQLite-tietokanta'}), 400
+
+        required = {'recipes', 'meal_plans', 'meal_plan_days'}
+        if not required.issubset(tables):
+            os.remove(tmp_path)
+            return jsonify({'error': 'Tiedosto ei näytä Ruokalistasuunnittelijan '
+                                     'tietokannalta (vaaditut taulut puuttuvat)'}), 400
+
+        safety = _do_backup(db_path, backup_dir, keep)
+        shutil.copy2(tmp_path, db_path)
+        os.remove(tmp_path)
+        return jsonify({'ok': True, 'message': 'Tietokanta palautettu ladatusta tiedostosta',
+                        'safety_copy': safety})
+
     @app.route('/api/backup/download-package')
-    @role_required('admin')
     def backup_download_package():
         """Kokoaa koko sovelluksen (exe + tietokanta + resurssit + ohjeet)
         yhdeksi ladattavaksi ZIP-paketiksi offline-palautusta varten."""

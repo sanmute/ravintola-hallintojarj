@@ -87,32 +87,37 @@ def monday_of_week(week_number, year):
         return date.fromisocalendar(year, 1, 1)
 
 
-def build_week_menu(meals, week_number, year, output_path):
+def build_week_menu(meals, week_number, year, output_path, day_names=None):
     """
     meals: EITHER a flat list of dicts {'name':..., 'notes':..., 'category':...}
            (heuristic split: soups = name contains 'keitto', rest = mains;
            no real salad data, generic salad_line used)
-       OR   a list of exactly 5 day dicts {'soup','main','salad'} (each a meal
-           dict or None), one per weekday Ma-Pe, in order — the exact,
-           real per-day assignment, used as-is.
+       OR   a list of day dicts {'soup','main','salad'} (each a meal dict or
+           None), one per weekday in order — the exact, real per-day
+           assignment, used as-is.
+    day_names: weekday labels, one per day of `meals` — defaults to the
+        5-day Ma-Pe list; pass a 7-item list (Ma..Su) for facilities that
+        run Monday-Sunday (hoiva, kymenkartano).
     Returns (output_path, warnings).
     """
     warnings = []
+    names = day_names or DAY_NAMES
     if meals and isinstance(meals[0], dict) and 'soup' in meals[0]:
         days_data = meals
     else:
+        n = len(names)
         soups = [m for m in meals if 'keitto' in m['name'].lower()]
         mains = [m for m in meals if 'keitto' not in m['name'].lower()]
-        if len(soups) < 5:
+        if len(soups) < n:
             warnings.append(f'Viikolla vain {len(soups)} keittoa — päivät täytetään kiertäen.')
-        if len(mains) < 5:
+        if len(mains) < n:
             warnings.append(f'Viikolla vain {len(mains)} pääruokaa — päivät täytetään kiertäen.')
         if not soups:
             soups = [{'name': '(KEITTO PUUTTUU)', 'notes': ''}]
         if not mains:
             mains = [{'name': '(PÄÄRUOKA PUUTTUU)', 'notes': ''}]
         days_data = [{'soup': soups[i % len(soups)], 'main': mains[i % len(mains)], 'salad': None}
-                     for i in range(5)]
+                     for i in range(n)]
 
     monday = monday_of_week(week_number, year)
 
@@ -146,7 +151,7 @@ def build_week_menu(meals, week_number, year, output_path):
     table.columns[0].width = Cm(3.2)
     table.columns[1].width = Cm(14.8)
 
-    for i, day in enumerate(DAY_NAMES):
+    for i, day in enumerate(names):
         d = monday + timedelta(days=i)
         day_info = days_data[i] if i < len(days_data) else {}
         soup = day_info.get('soup')

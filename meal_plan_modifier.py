@@ -279,18 +279,25 @@ class MealModifier:
             current_recipe_id = current[0]
             current_recipe = self.db.get_recipe_details(current_recipe_id)
 
-            if meal_type == 'keitto':
-                name_filter = "name_fi LIKE '%keitto%'"
-            elif meal_type == 'salaatti':
-                name_filter = "name_fi LIKE '%salaa%'"
+            if meal_type in ('keitto', 'salaatti'):
+                # Keitot ja salaatit kiertävät omissa, proteiinikategoriasta
+                # riippumattomissa kierroissaan (ks. meal_plan_generator) —
+                # minkä tahansa muun keiton/salaatin pitää siis kelvata
+                # vaihdoksi, ei vain samaa dish_category-arvoa. Käyttää
+                # eksplisiittistä recipe_type-saraketta, ei nimipohjaista
+                # arvausta (SOUP_KEYWORD/SALAD_KEYWORD poistettiin
+                # generaattorista samasta syystä).
+                c.execute('''SELECT id, name_fi FROM recipes
+                            WHERE recipe_type = ? AND id != ?
+                            ORDER BY name_fi''', (meal_type, current_recipe_id))
             else:
-                name_filter = "name_fi NOT LIKE '%keitto%' AND name_fi NOT LIKE '%salaa%'"
-
-            # Find same category recipes within the same dish role
-            c.execute(f'''SELECT id, name_fi FROM recipes
-                        WHERE dish_category = ? AND id != ? AND {name_filter}
-                        ORDER BY name_fi''',
-                     (current_recipe['dish_category'], current_recipe_id))
+                # Pääruoka: pysy samassa proteiinikategoriassa (kala/kana/
+                # naudanliha/kasvis), koska generaattorin viikkokohtainen
+                # kategoriatasapaino nojaa juuri tähän.
+                c.execute('''SELECT id, name_fi FROM recipes
+                            WHERE recipe_type = 'pääruoka' AND dish_category = ? AND id != ?
+                            ORDER BY name_fi''',
+                         (current_recipe['dish_category'], current_recipe_id))
 
             suggestions = c.fetchall()
 

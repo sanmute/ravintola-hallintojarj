@@ -8,3 +8,5 @@ pymupdf==1.28.0
 reportlab==4.2.5
 Pillow>=10.0
 pytesseract==0.3.13
+ctranslate2==4.8.1
+sentencepiece==0.2.2

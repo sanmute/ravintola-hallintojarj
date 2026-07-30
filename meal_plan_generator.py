@@ -11,14 +11,17 @@ import random
 class MealPlanGenerator:
     """Generates meal plans with constraints"""
     
-    SALAD_KEYWORD = 'salaa'  # matches salaatti/salaatit/salaattia etc.
-    SOUP_KEYWORD = 'keitto'  # matches keitto/keittoa/sosekeitto etc.
     SOUP_MIN_GAP_WEEKS = 2   # don't repeat the same soup within 2 calendar weeks
     DAYS_PER_WEEK = 5        # Ma-Pe — each weekday gets its own soup+main+salad
     MAIN_CATEGORY_CAP_PER_WEEK = 2  # no protein category more than 2x among the week's 5 mains
 
-    def __init__(self, db_path='meal_plans.db'):
+    def __init__(self, db_path='meal_plans.db', days_per_week=None):
+        """days_per_week: overrides the class default (5, Ma-Pe) — kesti stays
+        5, hoiva and kymenkartano use 7 (Ma-Su), each generated separately
+        from the same shared recipe pool."""
         self.db = MealPlanDB(db_path)
+        if days_per_week is not None:
+            self.DAYS_PER_WEEK = days_per_week
         self.max_repetition_per_cycle = 2  # Max 2x per 4-week cycle
         self.cycle_length = 7  # 7 days per week
         self.weeks_per_cycle = 4
@@ -35,11 +38,19 @@ class MealPlanGenerator:
         # separate seasonal segments.
         self._soup_last_used = {}
 
+    # recipe_type values that are never eligible for a weekday soup/main/salad
+    # slot (bakery, dessert) — kept out of the mains pool at every split step,
+    # since "mains" here really means "everything not yet claimed by a more
+    # specific split" (soups are peeled off separately, in _split_soups).
+    _NON_MEAL_SLOT_TYPES = ('leivonta', 'jälkiruoka')
+
     def _split_salads(self, recipe_pool):
-        """Split a recipe pool into (mains, salads). Salads are identified by
-        name and sorted by id for a stable rotation order."""
-        salads = [r for r in recipe_pool if self.SALAD_KEYWORD in r[1].lower()]
-        mains = [r for r in recipe_pool if self.SALAD_KEYWORD not in r[1].lower()]
+        """Split a recipe pool into (mains, salads), using the explicit
+        recipes.recipe_type column (r[3]) rather than name matching, and
+        sorted by id for a stable rotation order."""
+        salads = [r for r in recipe_pool if r[3] == 'salaatti']
+        mains = [r for r in recipe_pool
+                 if r[3] != 'salaatti' and r[3] not in self._NON_MEAL_SLOT_TYPES]
         salads.sort(key=lambda r: r[0])
         return mains, salads
 
@@ -51,9 +62,10 @@ class MealPlanGenerator:
         return salads[idx]
 
     def _split_soups(self, recipe_pool):
-        """Split a recipe pool into (mains, soups). Soups are identified by name."""
-        soups = [r for r in recipe_pool if self.SOUP_KEYWORD in r[1].lower()]
-        mains = [r for r in recipe_pool if self.SOUP_KEYWORD not in r[1].lower()]
+        """Split a recipe pool into (mains, soups), using the explicit
+        recipes.recipe_type column (r[3]) rather than name matching."""
+        soups = [r for r in recipe_pool if r[3] == 'keitto']
+        mains = [r for r in recipe_pool if r[3] != 'keitto']
         return mains, soups
 
     def _select_soup(self, soups, absolute_week):
@@ -70,7 +82,7 @@ class MealPlanGenerator:
         self._soup_last_used[recipe[0]] = absolute_week
         return recipe
     
-    def generate_meal_plan(self, season, num_weeks=52, only_new=False):
+    def generate_meal_plan(self, season, num_weeks=52, only_new=False, facility='kesti'):
         """
         Generate a complete meal plan: each of the DAYS_PER_WEEK weekdays gets
         its own main dish + soup + salad (independent rotations).
@@ -79,6 +91,9 @@ class MealPlanGenerator:
             season: Season name (e.g., 'talvi', 'kevät', 'kesä', 'syksy')
             num_weeks: Total number of weeks (default 52)
             only_new: restrict to hand-added/edited recipes only
+            facility: 'kesti', 'hoiva' or 'kymenkartano' — each generated and
+                stored as its own independent meal plan, from the same shared
+                recipe pool (only DAYS_PER_WEEK differs by facility).
 
         Returns:
             meal_plan_id if successful, None if failed
@@ -95,8 +110,8 @@ class MealPlanGenerator:
         print(f"📅 Generating {num_weeks}-week meal plan ({num_weeks // 4} cycles)")
 
         # Create meal plan
-        plan_name = f"{season.upper()} Meal Plan {datetime.now().strftime('%Y-%m-%d')}"
-        meal_plan_id = self.db.create_meal_plan(plan_name, season, num_weeks)
+        plan_name = f"{facility.upper()} {season.upper()} Meal Plan {datetime.now().strftime('%Y-%m-%d')}"
+        meal_plan_id = self.db.create_meal_plan(plan_name, season, num_weeks, facility=facility)
 
         # Generate meal assignments
         meal_assignments = self._generate_assignments(
@@ -122,7 +137,8 @@ class MealPlanGenerator:
         print(f"✅ Meal plan created with ID: {meal_plan_id}")
         return meal_plan_id
     
-    def _generate_assignments(self, available_recipes, num_weeks, season, week_offset=0):
+    def _generate_assignments(self, available_recipes, num_weeks, season, week_offset=0,
+                              day_indices=None):
         """
         Generate valid recipe assignments for the meal plan. Each weekday
         (Ma-Pe, DAYS_PER_WEEK of them) gets its own main dish, soup, and
@@ -139,6 +155,11 @@ class MealPlanGenerator:
         week_offset: absolute calendar week of week_num=1 minus 1. Used so the
         soup min-gap constraint stays continuous across a year plan's separate
         seasonal segments (e.g. the two talvi segments that wrap the year).
+
+        day_indices: which weekday indices to generate for (defaults to
+        range(DAYS_PER_WEEK), i.e. every day). Used by Hoiva's weekend
+        extension to generate ONLY day_of_week 5/6 (la/su), since its
+        ma-pe is always a live mirror of Kesti's plan, never its own data.
         """
 
         recipe_list = list(available_recipes)
@@ -163,7 +184,7 @@ class MealPlanGenerator:
         # category-variety cap)
         by_category = defaultdict(list)
         for recipe in mains_pool:
-            category = recipe[2]  # dish_category (query returns id, name, category)
+            category = recipe[2]  # dish_category (query returns id, name, category, recipe_type)
             by_category[category].append(recipe)
 
         print(f"\n📊 Pääruokien jakauma kategorioittain:")
@@ -173,6 +194,8 @@ class MealPlanGenerator:
         # Track recipe usage per cycle for repetition constraint
         usage_per_cycle = defaultdict(lambda: defaultdict(int))
 
+        weekdays = day_indices if day_indices is not None else range(self.DAYS_PER_WEEK)
+
         # Generate assignments week by week, weekday by weekday
         for week_num in range(1, num_weeks + 1):
             cycle_num = (week_num - 1) // self.weeks_per_cycle + 1
@@ -180,7 +203,7 @@ class MealPlanGenerator:
 
             week_main_ids = []
 
-            for weekday in range(self.DAYS_PER_WEEK):
+            for weekday in weekdays:
                 # Main dish
                 main = self._select_recipe(
                     mains_pool,
@@ -300,7 +323,7 @@ class MealPlanGenerator:
             cutover_id = int(row[0]) if row else 0
             new_filter = 'AND id > ?'
             params = (season, cutover_id)
-        c.execute(f"""SELECT id, name_fi, dish_category FROM recipes
+        c.execute(f"""SELECT id, name_fi, dish_category, recipe_type FROM recipes
                      WHERE meal_type = 'lounas' AND (season = ? OR season = 'kaikki')
                      {manual_only_filter} {new_filter}""",
                   params)
@@ -318,7 +341,7 @@ class MealPlanGenerator:
         ('talvi', 49, 52),   # Dec
     ]
 
-    def generate_year_plan(self, start_date=None, only_new=False):
+    def generate_year_plan(self, start_date=None, only_new=False, facility='kesti'):
         """
         Generate a full 52-week plan split into 4 seasonal themes
         following the calendar: talvi (1-9, 49-52), kevät (10-22),
@@ -331,6 +354,8 @@ class MealPlanGenerator:
 
         only_new: restrict to hand-added/edited recipes only, excluding
         bulk PoweResta/OCR/scrape imports.
+        facility: 'kesti', 'hoiva' or 'kymenkartano' — independent plan per
+        facility from the same shared recipe pool (DAYS_PER_WEEK differs).
         """
         from datetime import datetime
 
@@ -345,8 +370,8 @@ class MealPlanGenerator:
             print(f"❌ Liian vähän reseptejä kausille: {msg} (tarvitaan vähintään 25/kausi)")
             return None
 
-        plan_name = f"VUOSISUUNNITELMA {datetime.now().strftime('%Y-%m-%d')}"
-        meal_plan_id = self.db.create_meal_plan(plan_name, 'vuosi', 52)
+        plan_name = f"{facility.upper()} VUOSISUUNNITELMA {datetime.now().strftime('%Y-%m-%d')}"
+        meal_plan_id = self.db.create_meal_plan(plan_name, 'vuosi', 52, facility=facility)
 
         total = 0
         for season, start_week, end_week in self.YEAR_SEGMENTS:
@@ -369,6 +394,65 @@ class MealPlanGenerator:
 
         print(f"\n✅ Vuosisuunnitelma valmis: {total} ateriaa, ID {meal_plan_id}")
         return meal_plan_id
+
+    WEEKEND_DAYS = (5, 6)  # La, Su — the only days Hoiva ever stores itself
+
+    def generate_weekend_extension(self, kesti_plan_id, only_new=False):
+        """
+        Generate Hoiva's La/Su extension for an existing Kesti plan.
+
+        Hoiva's ma-pe is a live mirror of the linked Kesti plan (read
+        directly from it at query time, never copied/stored) — this method
+        only ever generates and stores La/Su, and links the new plan back
+        to kesti_plan_id via meal_plans.mirrors_plan_id so the mirror can
+        be resolved later.
+
+        Returns the new Hoiva meal_plan_id, or None if kesti_plan_id
+        doesn't exist or isn't a 'kesti' plan.
+        """
+        import sqlite3
+        conn = sqlite3.connect(self.db.db_path)
+        conn.row_factory = sqlite3.Row
+        source = conn.execute(
+            'SELECT id, name, season, num_weeks, facility FROM meal_plans WHERE id = ?',
+            (kesti_plan_id,)).fetchone()
+        conn.close()
+        if not source or (source['facility'] or 'kesti') != 'kesti':
+            print(f"❌ Plan {kesti_plan_id} is not a valid Kesti plan to mirror")
+            return None
+
+        season, num_weeks = source['season'], source['num_weeks']
+        plan_name = f"HOIVA {season.upper()} (la-su, peilaa: {source['name']})"
+        hoiva_plan_id = self.db.create_meal_plan(plan_name, season, num_weeks, facility='hoiva')
+
+        conn = sqlite3.connect(self.db.db_path)
+        conn.execute('UPDATE meal_plans SET mirrors_plan_id = ? WHERE id = ?',
+                    (kesti_plan_id, hoiva_plan_id))
+        conn.commit()
+        conn.close()
+
+        total = 0
+        if season == 'vuosi':
+            for seg_season, start_week, end_week in self.YEAR_SEGMENTS:
+                pool = self._get_season_pool(seg_season, only_new=only_new)
+                seg_weeks = end_week - start_week + 1
+                assignments = self._generate_assignments(
+                    pool, seg_weeks, seg_season,
+                    week_offset=start_week - 1, day_indices=self.WEEKEND_DAYS)
+                for week_num, day_num, recipe_id, meal_type in assignments:
+                    self.db.add_meal_to_plan(
+                        hoiva_plan_id, start_week + week_num - 1, day_num, recipe_id, meal_type)
+                total += len(assignments)
+        else:
+            pool = self._get_season_pool(season, only_new=only_new)
+            assignments = self._generate_assignments(
+                pool, num_weeks, season, day_indices=self.WEEKEND_DAYS)
+            for week_num, day_num, recipe_id, meal_type in assignments:
+                self.db.add_meal_to_plan(hoiva_plan_id, week_num, day_num, recipe_id, meal_type)
+            total = len(assignments)
+
+        print(f"✅ Hoiva la-su valmis: {total} ateriaa, ID {hoiva_plan_id} (peilaa suunnitelmaa {kesti_plan_id})")
+        return hoiva_plan_id
 
     def get_meal_plan_stats(self, meal_plan_id):
         """Get statistics about a meal plan"""

@@ -1,7 +1,8 @@
 # Ruokalistasuunnittelija — Ravintolan hallintajärjestelmä
 
-Tämä paketti lisää sovellukseen käyttäjätunnukset ja roolit,
-varmuuskopioinnin, lähiverkkokäytön sekä Windows-työpöytäsovelluksen.
+Tämä paketti lisää sovellukseen varmuuskopioinnin, lähiverkkokäytön sekä
+Windows-työpöytäsovelluksen. Sovellus on yksinkäyttäjäjärjestelmä — ei
+käyttäjätunnuksia, ei kirjautumista, kaikki toiminnot ovat aina käytössä.
 
 ---
 
@@ -9,62 +10,28 @@ varmuuskopioinnin, lähiverkkokäytön sekä Windows-työpöytäsovelluksen.
 
 Kopioi nämä tiedostot projektikansioon `app.py`:n viereen:
 
-- `auth.py`
 - `backup.py`
 - `desktop.py`
 - `ruokalistasuunnittelija.spec`
 - `RAKENNA_EXE.bat`
 
-Lisää sitten `app.py`-tiedostoon **kolme riviä**.
+Lisää sitten `app.py`-tiedostoon:
 
-Importtien perään (rivin 20 tienoille):
+Importtien perään:
 
 ```python
-from auth import init_auth
 from backup import init_backup
 ```
 
-Heti `OUTPUT_DIR`-rivien jälkeen (rivin 27 tienoille):
+Heti `OUTPUT_DIR`-rivien jälkeen:
 
 ```python
-init_auth(app, DB_PATH)
 init_backup(app, DB_PATH)
 ```
 
-Siinä kaikki — kaikki nykyiset reitit ja ominaisuudet toimivat kuten ennenkin,
-mutta nyt kirjautumisen takana.
-
 ---
 
-## 2. Käyttäjät ja roolit
-
-Ensimmäisellä käynnistyksellä luodaan tunnus:
-
-| Tunnus | Salasana | Rooli |
-|--------|----------|-------|
-| admin  | vaihda123 | admin |
-
-**Vaihda salasana heti ensimmäisen kirjautumisen jälkeen!**
-
-Roolit:
-
-- **admin** — kaikki oikeudet, käyttäjien hallinta, varmuuskopiot (esihenkilö)
-- **muokkaus** — reseptien ja listojen luonti, muokkaus ja poisto (keittiövastaavat)
-- **katselu** — vain katselu ja vientitiedostojen lataus (muu henkilökunta)
-
-Käyttäjien hallinta (admin):
-
-- Listaa: `GET /api/users`
-- Lisää: `POST /api/users` — `{"username": "...", "password": "...", "role": "muokkaus"}`
-- Poista: `DELETE /api/users/<id>`
-- Oma salasananvaihto (kaikki): `POST /api/users/password` — `{"old": "...", "new": "..."}`
-
-(Halutessasi rakennamme näille myöhemmin oman välilehden käyttöliittymään —
-API on jo valmis.)
-
----
-
-## 3. Varmuuskopiot (admin)
+## 2. Varmuuskopiot
 
 - Luo kopio: `POST /api/backup`
 - Listaa kopiot: `GET /api/backup`
@@ -77,7 +44,7 @@ Palautuksen yhteydessä nykytilasta otetaan aina turvakopio ensin.
 
 ---
 
-## 4. Käyttö lähiverkossa (suositeltu tapa!)
+## 3. Käyttö lähiverkossa (suositeltu tapa!)
 
 Sovelluksen ei tarvitse olla asennettuna jokaiselle koneelle.
 Riittää että **yksi kone** (esim. keittiön PC) ajaa sovellusta —
@@ -88,14 +55,14 @@ http://<koneen-nimi>:5001
 ```
 
 Työpöytäsovelluksen ikkunan otsikossa näkyy valmiiksi osoite,
-jonka voi jakaa muille. Jokainen kirjautuu omalla tunnuksellaan.
+jonka voi jakaa muille.
 
 Jos Windowsin palomuuri kysyy lupaa ensimmäisellä käynnistyksellä,
 salli yhteys **yksityisissä verkoissa**.
 
 ---
 
-## 5. Työpöytäsovelluksen rakentaminen (EXE)
+## 4. Työpöytäsovelluksen rakentaminen (EXE)
 
 Kehityskoneella:
 
@@ -114,7 +81,7 @@ sisään. Jos haluat tietokannan verkkolevylle, muuta `app.py`:n
 
 ---
 
-## 6. Automaattinen käynnistys (valinnainen)
+## 5. Automaattinen käynnistys (valinnainen)
 
 Palvelinkoneella: paina `Win+R`, kirjoita `shell:startup`, ja kopioi
 pikakuvake avautuvaan kansioon. Sovellus käynnistyy aina kirjautumisen

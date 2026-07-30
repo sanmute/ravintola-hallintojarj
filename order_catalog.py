@@ -43,6 +43,9 @@ def _conn(db_path):
     return conn
 
 
+DEFAULT_SERVINGS = 4  # käytetään jos reseptillä ei ole annosmäärää tallennettuna
+
+
 def _ensure_tables(db_path):
     conn = _conn(db_path)
     conn.executescript("""
@@ -68,21 +71,90 @@ def _ensure_tables(db_path):
             UNIQUE (catalog_id, name, unit)
         );
     """)
+    cols = [r[1] for r in conn.execute('PRAGMA table_info(order_catalogs)').fetchall()]
+    if 'target_servings' not in cols:
+        # Montako annosta viikon tilaus mitoitetaan — ravintola tarjoilee
+        # yleensä 125-150 annosta/päivä, mutta reseptit on kirjoitettu
+        # vaihtelevalle annosmäärälle (4-10+), joten raaka-aineet pitää
+        # skaalata per resepti sen omalla annosmäärällä ennen summausta.
+        conn.execute('ALTER TABLE order_catalogs ADD COLUMN target_servings INTEGER')
     conn.commit()
     conn.close()
 
 
-def _aggregate_ingredients(conn, plan_id, week):
-    """Sum ingredient quantities for one week of a meal plan."""
-    return conn.execute(
-        '''SELECT i.name_fi AS name, ri.unit AS unit,
-                  SUM(ri.quantity) AS total
-           FROM meal_plan_days d
-           JOIN recipe_ingredients ri ON ri.recipe_id = d.recipe_id
-           JOIN ingredients i ON i.id = ri.ingredient_id
-           WHERE d.meal_plan_id = ? AND d.week_number = ?
-           GROUP BY i.name_fi, ri.unit
-           ORDER BY i.name_fi COLLATE NOCASE''', (plan_id, week)).fetchall()
+def _effective_recipe_ids(conn, plan_id, week):
+    """Recipe ids actually served that week, mirror-aware: Hoiva's ma-pe
+    always equals its linked Kesti plan (meal_plans.mirrors_plan_id), only
+    la-su is Hoiva's own data. Duplicates are kept (the same recipe served
+    on two different days that week must be counted/ordered twice)."""
+    plan = conn.execute('SELECT mirrors_plan_id FROM meal_plans WHERE id = ?', (plan_id,)).fetchone()
+    mirrors = plan['mirrors_plan_id'] if plan else None
+    own = conn.execute(
+        'SELECT day_of_week, recipe_id FROM meal_plan_days WHERE meal_plan_id = ? AND week_number = ?',
+        (plan_id, week)).fetchall()
+    if not mirrors:
+        return [r['recipe_id'] for r in own]
+    mirrored = conn.execute(
+        'SELECT recipe_id FROM meal_plan_days WHERE meal_plan_id = ? AND week_number = ? AND day_of_week < 5',
+        (mirrors, week)).fetchall()
+    return [r['recipe_id'] for r in mirrored] + [r['recipe_id'] for r in own if r['day_of_week'] >= 5]
+
+
+def _aggregate_ingredients(conn, plan_id, week, target_servings=None):
+    """Sum ingredient quantities for one week of a meal plan.
+
+    target_servings: if given, each recipe's ingredient quantities are
+    scaled by target_servings / recipe's own servings count (falling back
+    to DEFAULT_SERVINGS when a recipe has no servings value saved) before
+    summing — recipes are written for whatever batch they were originally
+    portioned for (commonly 4-10), but the kitchen needs one consistent
+    total for however many people are actually being served that week.
+
+    Returns (rows, missing_servings) — missing_servings is the sorted list
+    of distinct recipe names that had no servings value and so were scaled
+    using DEFAULT_SERVINGS as a guess.
+    """
+    recipe_ids = _effective_recipe_ids(conn, plan_id, week)
+    if not recipe_ids:
+        return [], []
+
+    distinct_ids = list(set(recipe_ids))
+    placeholders = ','.join('?' * len(distinct_ids))
+    recipe_rows = conn.execute(
+        f'SELECT id, name_fi, servings FROM recipes WHERE id IN ({placeholders})',
+        distinct_ids).fetchall()
+    servings_by_recipe = {r['id']: r['servings'] for r in recipe_rows}
+    name_by_recipe = {r['id']: r['name_fi'] for r in recipe_rows}
+    missing_servings = sorted({name_by_recipe[rid] for rid in distinct_ids
+                              if not servings_by_recipe.get(rid)}) if target_servings else []
+
+    ing_rows = conn.execute(
+        f'''SELECT ri.recipe_id, i.name_fi AS name, ri.unit AS unit, ri.quantity AS quantity
+            FROM recipe_ingredients ri JOIN ingredients i ON i.id = ri.ingredient_id
+            WHERE ri.recipe_id IN ({placeholders})''', distinct_ids).fetchall()
+    ing_by_recipe = {}
+    for row in ing_rows:
+        ing_by_recipe.setdefault(row['recipe_id'], []).append(row)
+
+    sums = {}     # key -> running total (only from occurrences with a known quantity)
+    has_known = set()
+    for rid in recipe_ids:
+        if target_servings:
+            base = servings_by_recipe.get(rid) or DEFAULT_SERVINGS
+            factor = target_servings / base
+        else:
+            factor = 1
+        for ing in ing_by_recipe.get(rid, []):
+            key = (ing['name'], ing['unit'] or '')
+            if ing['quantity'] is None:
+                sums.setdefault(key, 0)
+                continue
+            sums[key] = sums.get(key, 0) + ing['quantity'] * factor
+            has_known.add(key)
+
+    rows = [{'name': k[0], 'unit': k[1], 'total': (round(v, 3) if k in has_known else None)}
+           for k, v in sorted(sums.items())]
+    return rows, missing_servings
 
 
 def init_order_catalog(app, db_path):
@@ -95,10 +167,18 @@ def init_order_catalog(app, db_path):
         plan_id, week = d.get('plan_id'), d.get('week')
         if not plan_id or not week:
             return jsonify({'error': 'plan_id ja week vaaditaan'}), 400
+        target_servings = d.get('target_servings')
+        if target_servings is not None:
+            try:
+                target_servings = int(target_servings)
+                if not (1 <= target_servings <= 2000):
+                    return jsonify({'error': 'Annosmäärän pitää olla 1-2000'}), 400
+            except (TypeError, ValueError):
+                return jsonify({'error': 'Virheellinen annosmäärä'}), 400
 
         conn = _conn(db_path)
         try:
-            ings = _aggregate_ingredients(conn, plan_id, week)
+            ings, missing_servings = _aggregate_ingredients(conn, plan_id, week, target_servings)
 
             cat = conn.execute(
                 'SELECT id FROM order_catalogs WHERE meal_plan_id=? AND week_number=?',
@@ -122,8 +202,7 @@ def init_order_catalog(app, db_path):
                        VALUES (?,?,?,?)
                        ON CONFLICT(catalog_id, name, unit)
                        DO UPDATE SET calculated_qty = excluded.calculated_qty''',
-                    (cat_id, ing['name'], ing['unit'] or '',
-                     round(ing['total'], 3)))
+                    (cat_id, ing['name'], ing['unit'] or '', ing['total']))
 
             # Remove auto rows whose ingredient no longer appears (keep
             # manual rows and rows the user adjusted or annotated).
@@ -137,8 +216,8 @@ def init_order_catalog(app, db_path):
                                  (row['id'],))
 
             conn.execute(
-                "UPDATE order_catalogs SET updated_at=datetime('now') WHERE id=?",
-                (cat_id,))
+                "UPDATE order_catalogs SET updated_at=datetime('now'), target_servings=? WHERE id=?",
+                (target_servings, cat_id))
             conn.commit()
             n = conn.execute(
                 'SELECT COUNT(*) c FROM order_catalog_items WHERE catalog_id=?',
@@ -149,7 +228,14 @@ def init_order_catalog(app, db_path):
             return jsonify({'catalog_id': cat_id, 'items': n,
                             'warning': 'Viikon resepteillä ei ole raaka-ainetietoja. '
                                        'Voit lisätä rivejä käsin.'})
-        return jsonify({'catalog_id': cat_id, 'items': n})
+        resp = {'catalog_id': cat_id, 'items': n}
+        if missing_servings:
+            resp['missing_servings'] = missing_servings
+            resp['warning'] = (
+                f"{len(missing_servings)} reseptillä ei ole annosmäärää tallennettuna — "
+                f"niiden raaka-aineet skaalattiin olettaen {DEFAULT_SERVINGS} annosta: "
+                + ', '.join(missing_servings[:8]) + ('…' if len(missing_servings) > 8 else ''))
+        return jsonify(resp)
 
     # ---------------------------------------------------- read
     @app.route('/api/catalog')
@@ -267,7 +353,8 @@ def init_order_catalog(app, db_path):
         ws.title = f'Viikko {week}'
         ws['A1'] = f'TILAUSLISTA — Viikko {week}'
         ws['A1'].font = Font(bold=True, size=13)
-        ws['A2'] = f'Luotu: {datetime.now().strftime("%d.%m.%Y %H:%M")}'
+        servings_note = f' — mitoitettu {cat["target_servings"]} annokselle' if cat['target_servings'] else ''
+        ws['A2'] = f'Luotu: {datetime.now().strftime("%d.%m.%Y %H:%M")}{servings_note}'
 
         headers = ['Tuote', 'Yksikkö', 'Laskettu määrä', 'Tilattava määrä',
                    'Huomiot', 'Kerätty']
@@ -327,9 +414,10 @@ def init_order_catalog(app, db_path):
             title=f'Tilauslista viikko {week}')
 
         styles = getSampleStyleSheet()
+        servings_note = f' — mitoitettu {cat["target_servings"]} annokselle' if cat['target_servings'] else ''
         elements = [
             Paragraph(f'TILAUSLISTA — Viikko {week}', styles['Title']),
-            Paragraph(f'Luotu: {datetime.now().strftime("%d.%m.%Y %H:%M")}',
+            Paragraph(f'Luotu: {datetime.now().strftime("%d.%m.%Y %H:%M")}{servings_note}',
                       styles['Normal']),
             Spacer(1, 8 * mm),
         ]

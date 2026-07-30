@@ -6,6 +6,40 @@ Run: python app.py  ->  http://localhost:5001
 """
 
 import os
+import sys
+
+# PyInstaller-paketti käynnistetään console=False-tilassa (ei mustaa
+# komentoikkunaa) — silloin sys.stdout/sys.stderr (JA sys.__stdout__/
+# sys.__stderr__) ovat None heti prosessin käynnistyessä, ja mikä tahansa
+# print()-kutsu (näitä on kymmeniä ympäri koodikantaa, mm. koko
+# ruokalistageneraattori) kaataa pyynnön: AttributeError: 'NoneType' object
+# has no attribute 'write'. Tämä ei koskaan näy kehityskäytössä (python app.py
+# ajetaan aina oikeasta konsolista), vain valmiissa .exe:ssä — siksi tämän
+# pitää olla ihan ensimmäinen asia joka ajetaan, ENNEN flaskin tai minkään
+# muun kirjaston tuontia: monet kirjastot (mm. Werkzeug) kiinnittävät oman
+# lokituskahvansa senhetkiseen sys.stderr-arvoon jo tuontihetkellä, joten
+# myöhemmin tehty uudelleenohjaus ei enää auttaisi niiden omaa lokitusta.
+if sys.stdout is None or sys.stderr is None:
+    _log_dir = os.path.join(os.environ.get('LOCALAPPDATA') or os.path.expanduser('~'),
+                             'Ruokalistasuunnittelija')
+    os.makedirs(_log_dir, exist_ok=True)
+    _log_file = open(os.path.join(_log_dir, 'app.log'), 'a', encoding='utf-8', buffering=1)
+    sys.stdout = sys.stderr = _log_file
+else:
+    # Kehityskäytössä (python app.py / KAYNNISTA.bat) konsoli on olemassa,
+    # mutta sen merkistö ei suomalaisella/EU-Windowsilla ole aina UTF-8
+    # (usein cp1252) — koodikannassa on kymmeniä print()-kutsuja joissa on
+    # emoji/erikoismerkkejä (mm. koko ruokalistageneraattori JA
+    # meal_plan_modifier.change_meal — yksi eniten käytetyistä ominaisuuksista,
+    # "vaihda ateria"), ja ne kaatuvat UnicodeEncodeError-virheeseen ei-UTF8
+    # konsolissa. Pakota UTF-8 ja korvaa tulostuskelvottomat merkit sen sijaan
+    # että pyyntö kaatuu.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, ValueError):
+            pass
+
 import json
 import sqlite3
 import threading
@@ -13,18 +47,33 @@ import time
 from datetime import datetime, timedelta
 from collections import defaultdict
 
-from flask import Flask, render_template, request, jsonify, send_file, session
+from flask import Flask, render_template, request, jsonify, send_file
 
 from meal_plan_db import MealPlanDB
 from meal_plan_generator import MealPlanGenerator
 from meal_plan_exporter import MealPlanExporter
 from meal_plan_modifier import MealModifier
 
-from auth import init_auth, role_required
 from backup import init_backup
+from translator import translate_en_to_fi
 
+import shutil
 import pytesseract
-pytesseract.pytesseract.tesseract_cmd = r'C:\Users\santeri.mutanen\AppData\Local\Tesseract-OCR\tesseract.exe'
+# Älä kovakoodaa kehittäjän omaa polkua — se ei ole olemassa keittiön koneella
+# eri käyttäjätunnuksen alla, jolloin OCR-tuonti olisi rikki joka asennuksessa
+# paitsi tällä yhdellä kehityskoneella. Etsi sen sijaan PATH:sta ja yleisimmistä
+# asennuspaikoista; jos mitään ei löydy, jätetään pytesseractin oletus voimaan
+# ja virhe näkyy vasta jos/kun OCR-ominaisuutta oikeasti käytetään.
+_tesseract_candidates = [
+    shutil.which('tesseract'),
+    r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+    r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
+    os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Tesseract-OCR', 'tesseract.exe'),
+]
+for _candidate in _tesseract_candidates:
+    if _candidate and os.path.exists(_candidate):
+        pytesseract.pytesseract.tesseract_cmd = _candidate
+        break
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024  # 64 MB
@@ -49,6 +98,34 @@ DB_PATH = os.path.join(_DATA_DIR, 'meal_plans.db')
 OUTPUT_DIR = os.path.join(_DATA_DIR, 'exports')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+
+def _downloads_dir():
+    """Käyttäjän oikea Windows-Lataukset-kansio (~\\Downloads). Palvelin ja
+    työpöytäsovelluksen ikkuna ajavat samalla koneella, joten tiedostot voi
+    kirjoittaa suoraan sinne sen sijaan että luotettaisiin selaimen
+    lataustoimintoon — pywebviewin sisäinen ikkuna ei tue sitä ollenkaan."""
+    path = os.path.join(os.path.expanduser('~'), 'Downloads')
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _save_to_downloads(src_path, download_name):
+    """Kopioi valmiin vientitiedoston Lataukset-kansioon nimellä download_name
+    (lisää ' (2)' tms. jos samanniminen tiedosto on jo olemassa, ettei
+    ylikirjoiteta käyttäjän aiempaa vientiä huomaamatta). Palauttaa lopullisen
+    polun."""
+    import shutil as _shutil
+    base, ext = os.path.splitext(download_name)
+    dest_dir = _downloads_dir()
+    dest = os.path.join(dest_dir, download_name)
+    n = 2
+    while os.path.exists(dest):
+        dest = os.path.join(dest_dir, f'{base} ({n}){ext}')
+        n += 1
+    _shutil.copy2(src_path, dest)
+    return dest
+
+
 # Siirrä vanha tietokanta automaattisesti, jos sellainen löytyy sovelluksen
 # vieressä (aiempi tallennuspaikka) eikä uudessa sijainnissa ole vielä dataa.
 if not os.path.exists(DB_PATH):
@@ -65,6 +142,48 @@ with sqlite3.connect(DB_PATH) as _startup_conn:
         _startup_conn.execute('ALTER TABLE recipes ADD COLUMN manual_only INTEGER DEFAULT 0')
     if 'servings' not in _cols:
         _startup_conn.execute('ALTER TABLE recipes ADD COLUMN servings INTEGER')
+    if 'recipe_type' not in _cols:
+        # Korvaa generaattorin aiemman nimipohjaisen keitto/salaatti-tunnistuksen
+        # (SOUP_KEYWORD/SALAD_KEYWORD-merkkijonohaku nimestä) eksplisiittisellä
+        # sarakkeella. Olemassa olevat reseptit luokitellaan kertaalleen samalla
+        # logiikalla jota generaattori käytti, jotta käyttäytyminen ei muutu —
+        # tästä eteenpäin luokitus on pysyvä ja muokattavissa käyttöliittymässä.
+        _startup_conn.execute("ALTER TABLE recipes ADD COLUMN recipe_type TEXT DEFAULT 'pääruoka'")
+        _startup_conn.execute(
+            "UPDATE recipes SET recipe_type='salaatti' WHERE lower(name_fi) LIKE '%salaa%'")
+        _startup_conn.execute(
+            "UPDATE recipes SET recipe_type='keitto' "
+            "WHERE lower(name_fi) LIKE '%keitto%' AND lower(name_fi) NOT LIKE '%salaa%'")
+    if 'instructions' not in _cols:
+        # Valmistusohjeet napattiin talteen jo aiemmin tuonnin/tarkistuksen
+        # aikana (instructions_raw skräpatuissa/OCR:atuissa/Oma resepti
+        # -reseptelyissä), mutta niitä ei koskaan tallennettu itse
+        # recipes-tauluun — ne hävisivät hyväksynnän yhteydessä. Tästä
+        # eteenpäin ne tallennetaan pysyvästi.
+        _startup_conn.execute("ALTER TABLE recipes ADD COLUMN instructions TEXT")
+
+    _mp_cols = [r[1] for r in _startup_conn.execute('PRAGMA table_info(meal_plans)').fetchall()]
+    if 'facility' not in _mp_cols:
+        # Sama reseptipohja kaikille toimipisteille (kesti/hoiva/kymenkartano),
+        # mutta jokaiselle oma erikseen generoitu ruokalista — kesti/hoiva
+        # käyttävät samoja reseptejä ma-pe, hoiva lisäksi la-su; kymenkartano
+        # saa oman erillisen suunnitelman samasta reseptipoolista. Olemassa
+        # olevat suunnitelmat ovat kaikki 'kesti' (ainoa toimipiste ennen tätä).
+        _startup_conn.execute("ALTER TABLE meal_plans ADD COLUMN facility TEXT DEFAULT 'kesti'")
+
+    if 'mirrors_plan_id' not in _mp_cols:
+        # Hoiva EI ole enää itsenäisesti generoitu — sen ma-pe on aina
+        # tasan sama kuin linkitetyn kesti-suunnitelman (vahvistettu
+        # käyttäjältä), ja vain la-su on hoiva-suunnitelman omaa dataa.
+        # Kymenkartano pysyy täysin itsenäisenä (fyysisesti eri paikka).
+        _startup_conn.execute("ALTER TABLE meal_plans ADD COLUMN mirrors_plan_id INTEGER")
+
+    _mpd_cols = [r[1] for r in _startup_conn.execute('PRAGMA table_info(meal_plan_days)').fetchall()]
+    if 'dessert_text' not in _mpd_cols:
+        # Vapaamuotoinen jälkiruokateksti perjantaille (day_of_week=4, aina
+        # perjantai riippumatta toimipisteestä koska maanantai=0). Tallennetaan
+        # päivän 'lounas'-riville, koska jokaisella päivällä on aina tasan yksi.
+        _startup_conn.execute("ALTER TABLE meal_plan_days ADD COLUMN dessert_text TEXT")
 
     # "Uudet reseptit" -jako: kaikki reseptit jotka olivat jo tietokannassa
     # ennen tätä ominaisuutta ovat pysyvästi "legacy" — kaikki tästä eteenpäin
@@ -90,7 +209,6 @@ def _recipe_overhaul_cutover_id(conn):
         "SELECT value FROM app_settings WHERE key = 'recipe_overhaul_cutover_id'").fetchone()
     return int(row[0]) if row else 0
 
-init_auth(app, DB_PATH)
 init_backup(app, DB_PATH)
 
 from order_catalog import init_order_catalog 
@@ -99,6 +217,7 @@ init_order_catalog(app, DB_PATH)
 SEASONS = {'talvi': 'Talvi', 'kevät': 'Kevät', 'kesä': 'Kesä', 'syksy': 'Syksy', 'kaikki': 'Ympärivuotinen'}
 CATEGORIES = {'kala': 'Kala', 'kana': 'Kana', 'naudanliha': 'Liha', 'kasvis': 'Kasvis'}
 CATEGORY_COLORS = {'kala': '#4A90D9', 'kana': '#F5D547', 'naudanliha': '#D94A4A', 'kasvis': '#5CB85C'}
+RECIPE_TYPES = ('pääruoka', 'keitto', 'salaatti', 'leivonta', 'jälkiruoka')
 
 # ---- Tietoa-sivun kiinteät tiedot — täytä oikeat yhteystiedot ennen käyttöönottoa ----
 APP_VERSION = '1.0.0'
@@ -116,6 +235,41 @@ def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+class _BadIntArg(Exception):
+    def __init__(self, message):
+        self.message = message
+
+
+def _int_arg(args, key, default=None):
+    """Parse an integer query/JSON argument, raising _BadIntArg (caught by the
+    caller into a clean 400 response) instead of letting a typo'd or missing
+    value crash the request with an unhandled ValueError/TypeError — a raw
+    500 page is especially bad here since several callers reach these routes
+    via a full-page navigation (window.location), which would blank out the
+    entire app for a non-technical user over one bad input."""
+    raw = args.get(key, default)
+    if raw is None:
+        raise _BadIntArg(f"Puuttuva tai virheellinen parametri '{key}'")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise _BadIntArg(f"Puuttuva tai virheellinen parametri '{key}'")
+
+
+def _optional_int_arg(args, key):
+    """Like _int_arg, but a genuinely absent value returns None instead of
+    raising — for params that are optional by design (e.g. 'servings' on
+    exports that work fine unscaled). Still raises _BadIntArg for a
+    present-but-unparseable value."""
+    raw = args.get(key)
+    if raw is None or raw == '':
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise _BadIntArg(f"Virheellinen parametri '{key}'")
 
 
 def _code_last_updated():
@@ -148,7 +302,8 @@ def index():
 def list_recipes():
     season = request.args.get('season', '')
     conn = get_db()
-    q = 'SELECT id, name_fi, season, meal_type, dish_category, notes, manual_only FROM recipes'
+    q = ('SELECT id, name_fi, season, meal_type, dish_category, recipe_type, notes, '
+         'manual_only, instructions, servings FROM recipes')
     params = []
     if season:
         q += ' WHERE season = ?'
@@ -161,18 +316,30 @@ def list_recipes():
 
 @app.route('/api/recipes', methods=['POST'])
 def add_recipe():
-    data = request.json
+    data = request.json or {}
     name = (data.get('name_fi') or '').strip()
     season = data.get('season')
     category = data.get('dish_category')
     if not name or season not in SEASONS or category not in CATEGORIES:
         return jsonify({'error': 'Nimi, kausi ja kategoria vaaditaan'}), 400
+    recipe_type = data.get('recipe_type') if data.get('recipe_type') in RECIPE_TYPES else 'pääruoka'
+    servings = None
+    if data.get('servings') not in (None, ''):
+        try:
+            servings = int(data['servings'])
+            if not (1 <= servings <= 500):
+                servings = None
+        except (TypeError, ValueError):
+            servings = None
     db = MealPlanDB(DB_PATH)
     recipe_id = db.add_recipe(
         name_fi=name, season=season,
         meal_type=data.get('meal_type', 'lounas'),
         dish_category=category,
-        notes=data.get('notes', '')
+        recipe_type=recipe_type,
+        notes=data.get('notes', ''),
+        instructions=data.get('instructions', ''),
+        servings=servings
     )
     if recipe_id is None:
         return jsonify({'error': f"Resepti '{name}' on jo olemassa"}), 409
@@ -186,16 +353,37 @@ def add_recipe():
 
 @app.route('/api/recipes/<int:recipe_id>', methods=['PUT'])
 def update_recipe(recipe_id):
-    data = request.json
+    data = request.json or {}
     conn = get_db()
     fields, params = [], []
-    for col in ('name_fi', 'season', 'meal_type', 'dish_category', 'notes'):
+    for col in ('name_fi', 'season', 'meal_type', 'dish_category', 'notes', 'instructions'):
         if col in data:
             fields.append(f'{col} = ?')
             params.append(data[col])
+    if 'recipe_type' in data:
+        if data['recipe_type'] not in RECIPE_TYPES:
+            conn.close()
+            return jsonify({'error': 'Virheellinen tyyppi'}), 400
+        fields.append('recipe_type = ?')
+        params.append(data['recipe_type'])
     if 'manual_only' in data:
         fields.append('manual_only = ?')
         params.append(1 if data['manual_only'] else 0)
+    if 'servings' in data:
+        if data['servings'] in (None, ''):
+            fields.append('servings = ?')
+            params.append(None)
+        else:
+            try:
+                servings = int(data['servings'])
+            except (TypeError, ValueError):
+                conn.close()
+                return jsonify({'error': 'Annosmäärän pitää olla numero'}), 400
+            if not (1 <= servings <= 500):
+                conn.close()
+                return jsonify({'error': 'Annosmäärän pitää olla 1-500'}), 400
+            fields.append('servings = ?')
+            params.append(servings)
     if not fields:
         conn.close()
         return jsonify({'error': 'Ei muutoksia'}), 400
@@ -244,7 +432,6 @@ def delete_recipe(recipe_id):
 # ============================================================
 
 @app.route('/api/admin/audit-recipes')
-@role_required('admin')
 def audit_recipes():
     """Listaa reseptit, jotka eivät todennäköisesti kuulu automaattiseen
     generointiin (jälkiruoat, juomat, välipalat, pelkät lisäkkeet), luokan
@@ -278,7 +465,6 @@ def audit_recipes():
 
 
 @app.route('/api/admin/delete-recipes', methods=['POST'])
-@role_required('admin')
 def delete_recipes_bulk():
     """Poista merkityt reseptit. Poisto menee aina läpi, vaikka resepti
     olisi käytössä jollain ruokalistalla — käytössä olleet ruokalistapaikat
@@ -343,7 +529,6 @@ def list_recipes_by_source():
 
 
 @app.route('/api/recipes/export-poweresta', methods=['POST'])
-@role_required('admin')
 def export_poweresta():
     """Vie valitut reseptit yhdeksi PoweResta-muotoiseksi Excel-tiedostoksi
     (yksi resepti per välilehti). Raaka-aineet haetaan samasta paikasta kuin
@@ -467,6 +652,22 @@ def _ensure_ingredient_editor_tables(conn):
     cols = [r[1] for r in conn.execute('PRAGMA table_info(recipe_ingredients)').fetchall()]
     if 'ingredient_instruction' not in cols:
         conn.execute('ALTER TABLE recipe_ingredients ADD COLUMN ingredient_instruction TEXT')
+    if 'sort_order' not in cols:
+        # Mahdollistaa käsin järjestämisen sen sijaan että raaka-aineet
+        # näytettäisiin aina aakkosjärjestyksessä. Olemassa olevat rivit
+        # varustetaan nykyisellä aakkosjärjestyksellään, jotta mikään ei
+        # hyppää näkyvästi paikaltaan tämän muutoksen myötä.
+        conn.execute('ALTER TABLE recipe_ingredients ADD COLUMN sort_order INTEGER DEFAULT 0')
+        _backfill_rows = conn.execute(
+            '''SELECT ri.recipe_id, ri.ingredient_id
+               FROM recipe_ingredients ri JOIN ingredients i ON i.id = ri.ingredient_id
+               ORDER BY ri.recipe_id, i.name_fi''').fetchall()
+        _counters = {}
+        for recipe_id, ingredient_id in _backfill_rows:
+            _counters[recipe_id] = _counters.get(recipe_id, 0) + 1
+            conn.execute(
+                'UPDATE recipe_ingredients SET sort_order = ? WHERE recipe_id = ? AND ingredient_id = ?',
+                (_counters[recipe_id], recipe_id, ingredient_id))
 
 
 def _log_ingredient_change(conn, recipe_id, change_type, ingredient_name,
@@ -476,7 +677,7 @@ def _log_ingredient_change(conn, recipe_id, change_type, ingredient_name,
            (recipe_id, changed_by_user_id, changed_by_username, change_type,
             ingredient_name, old_quantity, new_quantity, old_unit, new_unit)
            VALUES (?,?,?,?,?,?,?,?,?)''',
-        (recipe_id, session.get('user_id'), session.get('username'), change_type,
+        (recipe_id, None, 'admin', change_type,
          ingredient_name, old_quantity, new_quantity, old_unit, new_unit))
 
 
@@ -509,9 +710,9 @@ def get_recipe_details(recipe_id):
 
     ingredients = conn.execute(
         '''SELECT ri.ingredient_id, i.name_fi AS ingredient_name, ri.quantity, ri.unit,
-                  ri.ingredient_instruction
+                  ri.ingredient_instruction, ri.sort_order
            FROM recipe_ingredients ri JOIN ingredients i ON i.id = ri.ingredient_id
-           WHERE ri.recipe_id=? ORDER BY i.name_fi''', (recipe_id,)).fetchall()
+           WHERE ri.recipe_id=? ORDER BY ri.sort_order, i.name_fi''', (recipe_id,)).fetchall()
 
     changes = conn.execute(
         '''SELECT timestamp, changed_by_username, change_type, ingredient_name,
@@ -531,6 +732,47 @@ def get_recipe_details(recipe_id):
              'change_type': c['change_type'], 'description': _describe_ingredient_change(c)}
             for c in changes
         ],
+    })
+
+
+@app.route('/api/recipes/<int:recipe_id>/print-pdf')
+def print_recipe_pdf(recipe_id):
+    """Tulosta yksittäinen resepti PDF:nä keittiökäyttöön. Kuten viikkomenun
+    vienti — työpöytäversion sisäinen ikkuna (pywebview/WebView2) ei tue
+    selaimen lataustoimintoa, joten tiedosto kirjoitetaan suoraan käyttäjän
+    oikeaan Lataukset-kansioon palvelimella (ks. _save_to_downloads)."""
+    conn = get_db()
+    recipe = conn.execute(
+        'SELECT name_fi, recipe_type, season, servings, instructions FROM recipes WHERE id = ?',
+        (recipe_id,)).fetchone()
+    if not recipe:
+        conn.close()
+        return jsonify({'error': 'Reseptiä ei löydy'}), 404
+
+    ingredients = conn.execute(
+        '''SELECT i.name_fi, ri.quantity, ri.unit, ri.ingredient_instruction
+           FROM recipe_ingredients ri JOIN ingredients i ON i.id = ri.ingredient_id
+           WHERE ri.recipe_id = ? ORDER BY ri.sort_order, i.name_fi''', (recipe_id,)).fetchall()
+    conn.close()
+
+    ingredient_dicts = []
+    for ing in ingredients:
+        name = ing['name_fi']
+        if ing['ingredient_instruction']:
+            name = f"{name} ({ing['ingredient_instruction']})"
+        ingredient_dicts.append({'name_fi': name, 'quantity': ing['quantity'], 'unit': ing['unit']})
+
+    from menu_pdf_generator import build_single_recipe_pdf
+    safe_name = ''.join(c for c in recipe['name_fi'] if c.isalnum() or c in ' -_').strip() or f'resepti_{recipe_id}'
+    out = os.path.join(OUTPUT_DIR, f'resepti_{recipe_id}.pdf')
+    build_single_recipe_pdf(dict(recipe), ingredient_dicts, out)
+    download_name = f'{safe_name}.pdf'
+    saved_path = _save_to_downloads(out, download_name)
+
+    return jsonify({
+        'message': f'Resepti tallennettu Lataukset-kansioon: {download_name}',
+        'filename': download_name,
+        'saved_path': saved_path,
     })
 
 
@@ -575,10 +817,14 @@ def add_recipe_ingredient(recipe_id):
         return jsonify({'error': f"'{name}' on jo tämän reseptin raaka-aineissa — muokkaa "
                                  f"olemassa olevaa riviä sen sijaan"}), 409
 
+    next_order = conn.execute(
+        'SELECT COALESCE(MAX(sort_order), 0) + 1 FROM recipe_ingredients WHERE recipe_id=?',
+        (recipe_id,)).fetchone()[0]
     conn.execute(
-        '''INSERT INTO recipe_ingredients (recipe_id, ingredient_id, quantity, unit, ingredient_instruction)
-           VALUES (?,?,?,?,?)''',
-        (recipe_id, ing_id, quantity, unit, instruction))
+        '''INSERT INTO recipe_ingredients
+           (recipe_id, ingredient_id, quantity, unit, ingredient_instruction, sort_order)
+           VALUES (?,?,?,?,?,?)''',
+        (recipe_id, ing_id, quantity, unit, instruction, next_order))
     _log_ingredient_change(conn, recipe_id, 'added', name, new_quantity=quantity, new_unit=unit)
     conn.commit()
     conn.close()
@@ -645,6 +891,123 @@ def delete_recipe_ingredient(recipe_id, ingredient_id):
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
+
+
+@app.route('/api/recipes/<int:recipe_id>/ingredients/<int:ingredient_id>/move', methods=['POST'])
+def move_recipe_ingredient(recipe_id, ingredient_id):
+    """Siirrä raaka-aine yhden askeleen ylös/alas nykyisessä
+    näyttöjärjestyksessä (sort_order) — vaihtaa paikkaa vieressä olevan
+    rivin kanssa. direction: 'up' tai 'down'."""
+    d = request.json or {}
+    direction = d.get('direction')
+    if direction not in ('up', 'down'):
+        return jsonify({'error': "direction pitää olla 'up' tai 'down'"}), 400
+
+    conn = get_db()
+    _ensure_ingredient_editor_tables(conn)
+    rows = conn.execute(
+        '''SELECT ri.ingredient_id, ri.sort_order
+           FROM recipe_ingredients ri JOIN ingredients i ON i.id = ri.ingredient_id
+           WHERE ri.recipe_id=? ORDER BY ri.sort_order, i.name_fi''', (recipe_id,)).fetchall()
+    ids = [r['ingredient_id'] for r in rows]
+    if ingredient_id not in ids:
+        conn.close()
+        return jsonify({'error': 'Raaka-ainetta ei löydy tältä reseptiltä'}), 404
+
+    idx = ids.index(ingredient_id)
+    swap_idx = idx - 1 if direction == 'up' else idx + 1
+    if swap_idx < 0 or swap_idx >= len(ids):
+        conn.close()
+        return jsonify({'ok': True})  # jo listan reunassa — ei mitään tehtävää
+
+    # Normalisoi järjestysnumerot 1..N ennen vaihtoa, jotta tasapelit
+    # (esim. kaikki 0 ennen ensimmäistä käyttökertaa) eivät estä vaihtoa.
+    for i, iid in enumerate(ids, start=1):
+        conn.execute(
+            'UPDATE recipe_ingredients SET sort_order=? WHERE recipe_id=? AND ingredient_id=?',
+            (i, recipe_id, iid))
+    ids[idx], ids[swap_idx] = ids[swap_idx], ids[idx]
+    for i, iid in enumerate(ids, start=1):
+        conn.execute(
+            'UPDATE recipe_ingredients SET sort_order=? WHERE recipe_id=? AND ingredient_id=?',
+            (i, recipe_id, iid))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/ingredients/list')
+def list_ingredients():
+    """Kaikki raaka-aineet käyttömäärineen — pohja selattavalle/haettavalle
+    nimenkorjauslistalle (PoweResta-tuonneissa on paljon kirjoitusvirheitä ja
+    -tuotenimen/työohjeen sekoittumia, joita on käytännössä mahdoton löytää
+    ilman että näkee koko listan ja käyttömäärät kerralla)."""
+    conn = get_db()
+    rows = conn.execute(
+        '''SELECT i.id, i.name_fi,
+                  COUNT(DISTINCT ri.recipe_id) AS usage_count
+           FROM ingredients i
+           LEFT JOIN recipe_ingredients ri ON ri.ingredient_id = i.id
+           GROUP BY i.id
+           ORDER BY usage_count ASC, i.name_fi COLLATE NOCASE''').fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/ingredients/rename', methods=['POST'])
+def rename_ingredient():
+    """Nimeä raaka-aine uudelleen kaikkialla kertaheitolla. Reseptit eivät
+    tallenna raaka-aineiden nimiä omiin JSON-blobeihinsa (se recipes.ingredients
+    -sarake on käyttämätön kaikilla oikeilla tallennuspoluilla) — ne viittaavat
+    yhteiseen ingredients-tauluun recipe_ingredients-liitostaulun kautta, joten
+    yhden rivin nimen vaihto tässä taulussa riittää kaikille reseptejä
+    käyttäville paikoille."""
+    data = request.json or {}
+    old_name = (data.get('old_name') or '').strip()
+    new_name = (data.get('new_name') or '').strip()
+    if not old_name or not new_name:
+        return jsonify({'error': 'Anna sekä vanha että uusi nimi'}), 400
+    if old_name == new_name:
+        return jsonify({'error': 'Nimet ovat samat'}), 400
+
+    conn = get_db()
+    _ensure_ingredient_editor_tables(conn)
+    old_row = conn.execute('SELECT id FROM ingredients WHERE name_fi = ?', (old_name,)).fetchone()
+    if not old_row:
+        conn.close()
+        return jsonify({'error': f"Raaka-ainetta '{old_name}' ei löydy"}), 404
+    old_id = old_row['id']
+
+    affected = conn.execute(
+        'SELECT COUNT(DISTINCT recipe_id) FROM recipe_ingredients WHERE ingredient_id = ?',
+        (old_id,)).fetchone()[0]
+
+    existing_new = conn.execute('SELECT id FROM ingredients WHERE name_fi = ?', (new_name,)).fetchone()
+    if existing_new:
+        # Kohdenimi on jo olemassa toisena raaka-aineena — yhdistä siihen sen
+        # sijaan että rikottaisiin ingredients.name_fi:n UNIQUE-rajoitus.
+        new_id = existing_new['id']
+        # Jos jokin resepti käyttää jo MOLEMPIA (harvinainen, esim. vahingossa
+        # kahteen kertaan lisätty), poista vanha rivi ettei recipe_ingredients-
+        # taulun (recipe_id, ingredient_id) PRIMARY KEY rikkoudu.
+        conflicting = conn.execute(
+            '''SELECT recipe_id FROM recipe_ingredients
+               WHERE ingredient_id = ? AND recipe_id IN
+                     (SELECT recipe_id FROM recipe_ingredients WHERE ingredient_id = ?)''',
+            (old_id, new_id)).fetchall()
+        for row in conflicting:
+            conn.execute('DELETE FROM recipe_ingredients WHERE recipe_id=? AND ingredient_id=?',
+                        (row['recipe_id'], old_id))
+        conn.execute('UPDATE recipe_ingredients SET ingredient_id = ? WHERE ingredient_id = ?',
+                    (new_id, old_id))
+        conn.execute('DELETE FROM ingredients WHERE id = ?', (old_id,))
+    else:
+        conn.execute('UPDATE ingredients SET name_fi = ? WHERE id = ?', (new_name, old_id))
+
+    conn.commit()
+    conn.close()
+    return jsonify({'message': f"'{old_name}' → '{new_name}' päivitetty {affected} reseptiin",
+                    'updated_recipes': affected})
 
 
 # ============================================================
@@ -776,7 +1139,7 @@ def audit_mark_complete(recipe_id):
            (recipe_id, changed_by_user_id, changed_by_username, change_type,
             ingredient_name, notes)
            VALUES (?,?,?,'audit_checked',?,?)''',
-        (recipe_id, session.get('user_id'), session.get('username'),
+        (recipe_id, None, 'admin',
          '(koko reseptin tarkistus)', notes))
     conn.commit()
     conn.close()
@@ -855,6 +1218,21 @@ if not os.path.exists(REVIEW_FILE):
         _shutil.copy2(_legacy_review, REVIEW_FILE)
 
 
+@app.route('/api/translate', methods=['POST'])
+def translate_text():
+    """Kääntää lyhyen englanninkielisen tekstin suomeksi paikallisesti
+    (ei verkkoyhteyttä, ei ulkoista API:a) — tarkoitettu käsin lisättyjen
+    tai kerättyjen englanninkielisten reseptien nimien/raaka-aineiden/
+    ohjeiden esikäännökseksi. Käyttäjän pitää aina tarkistaa tulos ennen
+    hyväksymistä, konekäännös ei ole täydellinen etenkään yksiköiden osalta."""
+    data = request.get_json(force=True) or {}
+    text = data.get('text', '')
+    translated, error = translate_en_to_fi(text)
+    if error:
+        return jsonify({'error': error}), 500
+    return jsonify({'translated': translated})
+
+
 @app.route('/api/review')
 def review_list():
     if not os.path.exists(REVIEW_FILE):
@@ -882,7 +1260,7 @@ def _approve_worker(recipes):
     """Background worker: upload approved review-queue recipes into the database."""
     try:
         db = MealPlanDB(DB_PATH)
-        ok, updated, skipped = 0, 0, []
+        ok, updated, skipped, merged = 0, 0, [], []
         for r in recipes:
             if r.get('deleted'):
                 with approve_lock:
@@ -908,14 +1286,27 @@ def _approve_worker(recipes):
                 r['season'] = 'kaikki'
             if r.get('dish_category') not in CATEGORIES:
                 r['dish_category'] = 'kasvis'
+            if r.get('recipe_type') not in RECIPE_TYPES:
+                # Ei eksplisiittistä valintaa Tarkistusjonossa — arvaa nimestä
+                # samalla logiikalla jota generaattori käytti ennen recipe_type-
+                # saraketta, jottei tuonti jää käsittelemättömäksi tämän takia.
+                name_lower = r['name_fi'].lower()
+                if 'salaa' in name_lower:
+                    r['recipe_type'] = 'salaatti'
+                elif 'keitto' in name_lower:
+                    r['recipe_type'] = 'keitto'
+                else:
+                    r['recipe_type'] = 'pääruoka'
             rid = db.add_recipe(
                 name_fi=r['name_fi'], season=r['season'],
                 meal_type=r.get('meal_type', 'lounas'),
                 dish_category=r['dish_category'],
+                recipe_type=r['recipe_type'],
                 prep_time_min=r.get('prep_time_min'),
                 source_url=r.get('source_url'),
                 notes=r.get('notes', ''),
-                servings=r.get('servings')
+                servings=r.get('servings'),
+                instructions=r.get('instructions_raw', '')
             )
             if rid:
                 ok += 1
@@ -926,16 +1317,25 @@ def _approve_worker(recipes):
                 conn.commit()
                 conn.close()
             else:
-                if r.get('review_action') == 'updated':
-                    updated += 1
-                else:
-                    skipped.append(r['name_fi'] + ' (jo olemassa)')
                 # hae olemassa oleva resepti, jotta raaka-aineet voidaan silti liittää
                 conn = get_db()
                 row = conn.execute('SELECT id FROM recipes WHERE name_fi=?',
                                    (r['name_fi'],)).fetchone()
-                conn.close()
                 rid = row['id'] if row else None
+                existing_has_ingredients = bool(rid) and conn.execute(
+                    'SELECT COUNT(*) FROM recipe_ingredients WHERE recipe_id=?',
+                    (rid,)).fetchone()[0] > 0
+                conn.close()
+                ingredients_present = bool(r.get('ingredients_struct'))
+                if r.get('review_action') == 'updated':
+                    updated += 1
+                elif rid and not existing_has_ingredients and ingredients_present:
+                    # Olemassa oleva resepti ei sisällä vielä raaka-aineita — tuonnin
+                    # raaka-aineet täydentävät sen automaattisesti alla olevassa
+                    # _save_recipe_ingredients-kutsussa sen sijaan, että jäisivät ohi.
+                    merged.append(r['name_fi'])
+                else:
+                    skipped.append(r['name_fi'] + ' (jo olemassa)')
             ingredients = r.get('ingredients_struct') or []
             if r.get('review_action') == 'updated' and rid:
                 _replace_recipe_ingredients(rid, ingredients)
@@ -949,7 +1349,7 @@ def _approve_worker(recipes):
         with open(REVIEW_FILE, 'w', encoding='utf-8') as f:
             json.dump(remaining, f, ensure_ascii=False, indent=2)
         with approve_lock:
-            approve_state['result'] = {'uploaded': ok, 'updated': updated, 'skipped': skipped}
+            approve_state['result'] = {'uploaded': ok, 'updated': updated, 'skipped': skipped, 'merged': merged}
     except Exception as e:
         with approve_lock:
             approve_state['error'] = str(e)
@@ -981,10 +1381,16 @@ def review_approve_status():
 # MEAL PLANS: generate / view / modify / export
 # ============================================================
 
+FACILITIES = {'kesti': 'Kesti', 'hoiva': 'Hoiva', 'kymenkartano': 'Kymenkartano'}
+# Kesti: ma-pe (5). Hoiva ja Kymenkartano: ma-su (7) — molemmat samasta
+# jaetusta reseptipoolista, mutta kumpikin oma erikseen generoitu suunnitelmansa.
+FACILITY_DAYS_PER_WEEK = {'kesti': 5, 'hoiva': 7, 'kymenkartano': 7}
+
+
 @app.route('/api/plans')
 def list_plans():
     conn = get_db()
-    rows = conn.execute('SELECT id, name, season, num_weeks, created_at FROM meal_plans '
+    rows = conn.execute('SELECT id, name, season, num_weeks, facility, created_at FROM meal_plans '
                         'ORDER BY created_at DESC').fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
@@ -1000,29 +1406,73 @@ def _plan_season_distribution(plan_id):
 
 @app.route('/api/plans', methods=['POST'])
 def create_plan():
-    data = request.json
+    data = request.json or {}
     season = data.get('season')
     num_weeks = int(data.get('num_weeks', 52))
     only_new = bool(data.get('only_new_recipes'))
-    generator = MealPlanGenerator(DB_PATH)
+    facility = data.get('facility') if data.get('facility') in FACILITIES else 'kesti'
+
+    if facility == 'hoiva':
+        # Hoiva ei ole enää itsenäisesti generoitu toimipiste: sen ma-pe on
+        # AINA tasan sama kuin nykyisen Kesti-vuosisuunnitelman (vahvistettu
+        # käyttäjältä) — vain la-su generoidaan ja tallennetaan Hoivalle
+        # itselleen. season/num_weeks-parametrit eivät koske Hoivaa lainkaan.
+        conn = get_db()
+        kesti_plan = conn.execute(
+            "SELECT id, name FROM meal_plans WHERE facility = 'kesti' AND season = 'vuosi' "
+            "AND name NOT LIKE '%(arkistoitu %' ORDER BY created_at DESC LIMIT 1").fetchone()
+        if not kesti_plan:
+            conn.close()
+            return jsonify({'error': 'Kestin vuosisuunnitelmaa ei löydy — luo se ensin, '
+                                     'Hoiva peilaa sitä.'}), 400
+        existing_hoiva = conn.execute(
+            "SELECT id, name FROM meal_plans WHERE facility = 'hoiva' "
+            "AND name NOT LIKE '%(arkistoitu %' ORDER BY created_at DESC LIMIT 1").fetchone()
+        if existing_hoiva and not data.get('replace'):
+            conn.close()
+            return jsonify({
+                'error': 'Hoiva: la-su-suunnitelma on jo olemassa. Lähetä replace: true korvataksesi sen.',
+                'existing_plan_id': existing_hoiva['id'],
+                'existing_plan_name': existing_hoiva['name'],
+            }), 409
+        if existing_hoiva:
+            archived_at = datetime.now().strftime('%Y-%m-%d %H:%M')
+            conn.execute('UPDATE meal_plans SET name = ? WHERE id = ?',
+                        (f"{existing_hoiva['name']} (arkistoitu {archived_at})", existing_hoiva['id']))
+            conn.commit()
+        conn.close()
+
+        hoiva_generator = MealPlanGenerator(DB_PATH)
+        plan_id = hoiva_generator.generate_weekend_extension(kesti_plan['id'], only_new=only_new)
+        if not plan_id:
+            return jsonify({'error': 'Hoivan la-su-suunnitelman luonti epäonnistui'}), 500
+        return jsonify({
+            'success': True,
+            'meal_plan_id': plan_id,
+            'mirrors_plan_id': kesti_plan['id'],
+            'message': f"Hoiva luotu — ma-pe on aina sama kuin \"{kesti_plan['name']}\", "
+                       'la-su generoitu erikseen. Mene Selaa & Muokkaa -välilehteen.',
+        })
+
+    generator = MealPlanGenerator(DB_PATH, days_per_week=FACILITY_DAYS_PER_WEEK[facility])
 
     if season == 'vuosi':
-        # Vain esihenkilö (admin) saa luoda kokonaan uuden 52 viikon vuosisuunnitelman.
-        if session.get('role') != 'admin':
-            return jsonify({'error': 'Vain esihenkilö voi luoda uuden 52 viikon vuosisuunnitelman'}), 403
-
         # Älä hiljaa luo toista vuosisuunnitelmaa olemassa olevan rinnalle —
         # esihenkilön pitää joko korvata vanha (replace=true) tai poistaa se itse ensin.
+        # Arkistoidut (korvatut) vuosisuunnitelmat eivät lasketa "olemassa olevaksi" tässä.
+        # Jokaisella toimipisteellä (kesti/hoiva/kymenkartano) on oma erillinen
+        # vuosisuunnitelmansa, joten tarkistus on rajattu samaan toimipisteeseen.
         if not data.get('replace'):
             conn = get_db()
             existing = conn.execute(
                 "SELECT id, name, created_at FROM meal_plans WHERE season = 'vuosi' "
-                "ORDER BY created_at DESC LIMIT 1").fetchone()
+                "AND facility = ? AND name NOT LIKE '%(arkistoitu %' "
+                "ORDER BY created_at DESC LIMIT 1", (facility,)).fetchone()
             conn.close()
             if existing:
                 return jsonify({
-                    'error': 'Vuosisuunnitelma on jo olemassa. Lähetä replace: true '
-                             'korvataksesi sen, tai poista se ensin.',
+                    'error': f'{FACILITIES[facility]}: vuosisuunnitelma on jo olemassa. Lähetä '
+                             'replace: true korvataksesi sen, tai poista se ensin.',
                     'existing_plan_id': existing['id'],
                     'existing_plan_name': existing['name'],
                 }), 409
@@ -1040,18 +1490,38 @@ def create_plan():
                                      '(ympärivuotiset lasketaan mukaan joka kauteen).'}), 400
 
         if data.get('replace'):
+            # Arkistoi vanhat vuosisuunnitelmat sen sijaan että poistettaisiin ne —
+            # ne pysyvät Ruokalistat-listalla katselua/vertailua/myöhempää poistoa varten.
             conn = get_db()
-            old_ids = [r['id'] for r in conn.execute(
-                "SELECT id FROM meal_plans WHERE season = 'vuosi'").fetchall()]
-            for old_id in old_ids:
-                conn.execute('DELETE FROM meal_plan_days WHERE meal_plan_id = ?', (old_id,))
-                conn.execute('DELETE FROM meal_plans WHERE id = ?', (old_id,))
+            old_rows = conn.execute(
+                "SELECT id, name FROM meal_plans WHERE season = 'vuosi' AND facility = ? "
+                "AND name NOT LIKE '%(arkistoitu %'", (facility,)).fetchall()
+            archived_at = datetime.now().strftime('%Y-%m-%d %H:%M')
+            for row in old_rows:
+                conn.execute('UPDATE meal_plans SET name = ? WHERE id = ?',
+                             (f"{row['name']} (arkistoitu {archived_at})", row['id']))
             conn.commit()
             conn.close()
 
-        plan_id = generator.generate_year_plan(only_new=only_new)
+        plan_id = generator.generate_year_plan(only_new=only_new, facility=facility)
         if not plan_id:
             return jsonify({'error': 'Ruokalistan luonti epäonnistui'}), 500
+
+        if facility == 'kesti' and data.get('replace') and old_rows:
+            # Hoiva peilaa Kestin vuosisuunnitelmaa — kun se korvataan, minkä
+            # tahansa elävän Hoiva-suunnitelman peili pitää osoittaa uuteen
+            # (muuten se jäisi osoittamaan juuri arkistoituun vanhaan).
+            conn = get_db()
+            old_ids = [r['id'] for r in old_rows]
+            placeholders = ','.join('?' * len(old_ids))
+            conn.execute(
+                f"UPDATE meal_plans SET mirrors_plan_id = ? "
+                f"WHERE facility = 'hoiva' AND mirrors_plan_id IN ({placeholders}) "
+                f"AND name NOT LIKE '%(arkistoitu %'",
+                [plan_id] + old_ids)
+            conn.commit()
+            conn.close()
+
         stats = generator.get_meal_plan_stats(plan_id)
         protein_total = sum(stats['category_distribution'].values()) or 1
 
@@ -1096,7 +1566,7 @@ def create_plan():
         scope = 'uusia (käsin lisättyjä/muokattuja) reseptejä' if only_new else 'reseptiä'
         return jsonify({'error': f'Kaudella "{SEASONS[season]}" on vain {count} {scope} '
                                  f'(ml. ympärivuotiset). Tarvitaan vähintään 25.'}), 400
-    plan_id = generator.generate_meal_plan(season, num_weeks=num_weeks, only_new=only_new)
+    plan_id = generator.generate_meal_plan(season, num_weeks=num_weeks, only_new=only_new, facility=facility)
     if not plan_id:
         return jsonify({'error': 'Ruokalistan luonti epäonnistui'}), 500
     stats = generator.get_meal_plan_stats(plan_id)
@@ -1107,7 +1577,57 @@ def create_plan():
     }})
 
 
-MEAL_ROLE_BY_TYPE = {'keitto': 'soup', 'salaatti': 'salad'}  # anything else ('lounas') -> main
+MEAL_ROLE_BY_TYPE = {'keitto': 'soup', 'salaatti': 'salad', 'lounas2': 'main2'}  # anything else ('lounas') -> main
+WEEKDAY_LABELS = ['Ma', 'Ti', 'Ke', 'To', 'Pe', 'La', 'Su']  # kesti käyttää vain 0-4, hoiva/kymenkartano 0-6
+# Mikä viikonpäivä (0=ma..6=su) saa jälkiruokarivin, toimipisteittäin.
+# Kesti: perjantai (oma pohja ei näytä sitä, mutta rivi tallennetaan silti).
+# Hoiva: sunnuntai — vahvistettu asukas-pohjan JÄLKIRUOKA-rivistä.
+DESSERT_DAY_BY_FACILITY = {'kesti': 4, 'hoiva': 6, 'kymenkartano': 6}
+# Käytetään ainesosien skaalauksessa (tilauslista/kespro/valmistusohjeet)
+# kun reseptillä ei ole annosmäärää tallennettuna.
+DEFAULT_SERVINGS = 4
+
+
+def _mirrored_day_error(conn, plan_id, day_of_week):
+    """Hoiva's ma-pe (day_of_week 0-4) is a live mirror of its linked Kesti
+    plan — those rows don't exist on the Hoiva plan itself, so editing them
+    there would either fail silently or (worse) create a rogue row that
+    breaks the mirror. Returns a jsonify()able error dict if this edit
+    should be blocked, else None."""
+    if day_of_week >= 5:
+        return None
+    plan = conn.execute('SELECT mirrors_plan_id FROM meal_plans WHERE id = ?', (plan_id,)).fetchone()
+    if plan and plan['mirrors_plan_id']:
+        return {'error': 'Tämä päivä on aina sama kuin Kestin ruokalistalla — muokkaa sitä '
+                         'Kestin suunnitelman kautta.', 'mirrors_plan_id': plan['mirrors_plan_id']}
+    return None
+
+
+def _effective_meal_plan_days(conn, plan_id, week=None):
+    """Return this plan's day-by-day meal_plan_days rows (week_number,
+    day_of_week, recipe_id, meal_type, dessert_text), transparently
+    resolving a mirrored facility (Hoiva, confirmed to always equal Kesti's
+    plan Mon-Fri) so callers never need to know about the mirror: ma-pe
+    come from the linked Kesti plan, la-su from the plan's own rows.
+    Non-mirrored plans (kesti, kymenkartano) just return their own rows."""
+    plan = conn.execute('SELECT mirrors_plan_id FROM meal_plans WHERE id = ?', (plan_id,)).fetchone()
+    mirrors = plan['mirrors_plan_id'] if plan else None
+    week_clause = 'AND week_number = ?' if week is not None else ''
+    week_params = (week,) if week is not None else ()
+
+    own_rows = conn.execute(
+        f'''SELECT week_number, day_of_week, recipe_id, meal_type, dessert_text
+            FROM meal_plan_days WHERE meal_plan_id = ? {week_clause}''',
+        (plan_id,) + week_params).fetchall()
+    if not mirrors:
+        return sorted(own_rows, key=lambda r: (r['week_number'], r['day_of_week']))
+
+    mirrored_rows = conn.execute(
+        f'''SELECT week_number, day_of_week, recipe_id, meal_type, dessert_text
+            FROM meal_plan_days WHERE meal_plan_id = ? AND day_of_week < 5 {week_clause}''',
+        (mirrors,) + week_params).fetchall()
+    own_weekend = [r for r in own_rows if r['day_of_week'] >= 5]
+    return sorted(list(mirrored_rows) + own_weekend, key=lambda r: (r['week_number'], r['day_of_week']))
 
 
 @app.route('/api/plans/<int:plan_id>')
@@ -1117,26 +1637,87 @@ def get_plan(plan_id):
     if not plan:
         conn.close()
         return jsonify({'error': 'Ruokalistaa ei löydy'}), 404
-    rows = conn.execute(
-        '''SELECT d.week_number, d.day_of_week, d.recipe_id, d.meal_type, r.name_fi, r.dish_category
-           FROM meal_plan_days d JOIN recipes r ON d.recipe_id = r.id
-           WHERE d.meal_plan_id = ? ORDER BY d.week_number, d.day_of_week''',
-        (plan_id,)).fetchall()
+    day_rows = _effective_meal_plan_days(conn, plan_id)
+    recipe_ids = list({r['recipe_id'] for r in day_rows})
+    recipes_by_id = {}
+    if recipe_ids:
+        placeholders = ','.join('?' * len(recipe_ids))
+        recipes_by_id = {rr['id']: rr for rr in conn.execute(
+            f'''SELECT id, name_fi, dish_category,
+                       (SELECT COUNT(*) FROM recipe_ingredients ri WHERE ri.recipe_id = recipes.id) AS ingredient_count
+                FROM recipes WHERE id IN ({placeholders})''', recipe_ids).fetchall()}
     conn.close()
 
     weeks_grouped = defaultdict(lambda: defaultdict(
-        lambda: {'day': None, 'main': None, 'soup': None, 'salad': None}))
-    for r in rows:
+        lambda: {'day': None, 'main': None, 'main2': None, 'soup': None, 'salad': None, 'dessert_text': None}))
+    for r in day_rows:
         day_obj = weeks_grouped[r['week_number']][r['day_of_week']]
         day_obj['day'] = r['day_of_week']
         role = MEAL_ROLE_BY_TYPE.get(r['meal_type'], 'main')
-        day_obj[role] = {'recipe_id': r['recipe_id'], 'name': r['name_fi'],
-                         'category': r['dish_category'], 'meal_type': r['meal_type']}
+        rr = recipes_by_id.get(r['recipe_id'])
+        day_obj[role] = {'recipe_id': r['recipe_id'], 'name': rr['name_fi'] if rr else '?',
+                         'category': rr['dish_category'] if rr else None, 'meal_type': r['meal_type'],
+                         'has_ingredients': (rr['ingredient_count'] > 0) if rr else False}
+        if role == 'main':
+            day_obj['dessert_text'] = r['dessert_text']
 
     weeks = {week_num: sorted(days.values(), key=lambda d: d['day'])
              for week_num, days in weeks_grouped.items()}
     return jsonify({'id': plan['id'], 'name': plan['name'], 'season': plan['season'],
-                    'num_weeks': plan['num_weeks'], 'weeks': weeks})
+                    'num_weeks': plan['num_weeks'], 'facility': plan['facility'] or 'kesti',
+                    'mirrors_plan_id': plan['mirrors_plan_id'],
+                    'weeks': weeks})
+
+
+@app.route('/api/plans/<int:plan_id1>/compare/<int:plan_id2>')
+def compare_plans(plan_id1, plan_id2):
+    """Vertaa kahden ruokalistan tiettyä viikkoa (oletus vko 1) päivä kerrallaan."""
+    try:
+        week = _int_arg(request.args, 'week', 1)
+    except _BadIntArg as e:
+        return jsonify({'error': e.message}), 400
+    conn = get_db()
+    plans = {}
+    for pid in (plan_id1, plan_id2):
+        plan = conn.execute('SELECT id, name FROM meal_plans WHERE id = ?', (pid,)).fetchone()
+        if not plan:
+            conn.close()
+            return jsonify({'error': f'Ruokalistaa {pid} ei löydy'}), 404
+        plans[pid] = plan
+
+    rows = conn.execute(
+        '''SELECT d.meal_plan_id, d.day_of_week, d.meal_type, r.name_fi
+           FROM meal_plan_days d JOIN recipes r ON d.recipe_id = r.id
+           WHERE d.meal_plan_id IN (?, ?) AND d.week_number = ?
+           ORDER BY d.day_of_week''', (plan_id1, plan_id2, week)).fetchall()
+    conn.close()
+
+    by_day = defaultdict(lambda: {plan_id1: {}, plan_id2: {}})
+    for r in rows:
+        role = MEAL_ROLE_BY_TYPE.get(r['meal_type'], 'main')
+        by_day[r['day_of_week']][r['meal_plan_id']][role] = r['name_fi']
+
+    comparison = []
+    changes = 0
+    for day in sorted(by_day.keys()):
+        a, b = by_day[day][plan_id1], by_day[day][plan_id2]
+        same = a == b
+        if not same:
+            changes += 1
+        comparison.append({
+            'day_of_week': WEEKDAY_LABELS[day] if 0 <= day < len(WEEKDAY_LABELS) else str(day),
+            'plan1': {'soup': a.get('soup'), 'main': a.get('main'), 'salad': a.get('salad')},
+            'plan2': {'soup': b.get('soup'), 'main': b.get('main'), 'salad': b.get('salad')},
+            'same': same,
+        })
+
+    return jsonify({
+        'week': week,
+        'plan1': {'id': plan_id1, 'name': plans[plan_id1]['name']},
+        'plan2': {'id': plan_id2, 'name': plans[plan_id2]['name']},
+        'comparison': comparison,
+        'changes': changes,
+    })
 
 
 @app.route('/api/plans/<int:plan_id>', methods=['DELETE'])
@@ -1152,14 +1733,25 @@ def delete_plan(plan_id):
 @app.route('/api/plans/<int:plan_id>/change_meal', methods=['POST'])
 def change_meal(plan_id):
     """Change one meal slot - the 'short notice' feature."""
-    data = request.json
+    data = request.json or {}
+    try:
+        week_number = _int_arg(data, 'week')
+        day_of_week = _int_arg(data, 'slot')
+        new_recipe_id = _int_arg(data, 'new_recipe_id')
+    except _BadIntArg as e:
+        return jsonify({'error': e.message}), 400
+    conn = get_db()
+    mirror_err = _mirrored_day_error(conn, plan_id, day_of_week)
+    conn.close()
+    if mirror_err:
+        return jsonify(mirror_err), 400
     modifier = MealModifier(DB_PATH)
     ok = modifier.change_meal(
         meal_plan_id=plan_id,
-        week_number=int(data['week']),
-        day_of_week=int(data['slot']),
+        week_number=week_number,
+        day_of_week=day_of_week,
         meal_type=data.get('meal_type', 'lounas'),
-        new_recipe_id=int(data['new_recipe_id']),
+        new_recipe_id=new_recipe_id,
         reason=data.get('reason', 'Manuaalinen vaihto'),
         modified_by=data.get('modified_by', 'käyttäjä')
     )
@@ -1168,11 +1760,107 @@ def change_meal(plan_id):
     return jsonify({'message': 'Ateria vaihdettu'})
 
 
+@app.route('/api/plans/<int:plan_id>/dessert', methods=['POST'])
+def update_dessert(plan_id):
+    """Tallenna vapaamuotoinen jälkiruokateksti yhdelle päivälle (perjantaille,
+    day_of_week=4, mutta toimii mille tahansa päivälle jos joskus tarvitaan
+    muillekin). Tallennetaan päivän 'lounas'-riville, koska jokaisella
+    päivällä on aina tasan yksi sellainen."""
+    data = request.json or {}
+    try:
+        week = _int_arg(data, 'week')
+        day_of_week = _int_arg(data, 'day_of_week')
+    except _BadIntArg as e:
+        return jsonify({'error': e.message}), 400
+    dessert_text = (data.get('dessert_text') or '').strip()
+
+    conn = get_db()
+    mirror_err = _mirrored_day_error(conn, plan_id, day_of_week)
+    if mirror_err:
+        conn.close()
+        return jsonify(mirror_err), 400
+    cur = conn.execute(
+        '''UPDATE meal_plan_days SET dessert_text = ?
+           WHERE meal_plan_id = ? AND week_number = ? AND day_of_week = ? AND meal_type = 'lounas' ''',
+        (dessert_text, plan_id, week, day_of_week))
+    conn.commit()
+    updated = cur.rowcount
+    conn.close()
+    if not updated:
+        return jsonify({'error': 'Päivää ei löytynyt tältä ruokalistalta'}), 404
+    return jsonify({'message': 'Jälkiruoka tallennettu'})
+
+
+@app.route('/api/plans/<int:plan_id>/second-main', methods=['POST'])
+def update_second_main(plan_id):
+    """Valinnainen toinen pääruoka yhdelle päivälle (esim. Kymenkartanon
+    ruokalistalla nähty kahden vaihtoehdon päivä) — ei jotain jonka
+    generaattori koskaan tekee automaattisesti, vaan esihenkilön käsin
+    lisäämä/poistama per päivä. Tallennetaan omana rivinään
+    meal_type='lounas2', normaalin 'lounas'-rivin rinnalle.
+    recipe_id=None (tai puuttuu) poistaa toisen pääruoan."""
+    data = request.json or {}
+    try:
+        week = _int_arg(data, 'week')
+        day_of_week = _int_arg(data, 'day_of_week')
+    except _BadIntArg as e:
+        return jsonify({'error': e.message}), 400
+    recipe_id = data.get('recipe_id')
+
+    conn = get_db()
+    mirror_err = _mirrored_day_error(conn, plan_id, day_of_week)
+    if mirror_err:
+        conn.close()
+        return jsonify(mirror_err), 400
+    if recipe_id in (None, ''):
+        cur = conn.execute(
+            '''DELETE FROM meal_plan_days
+               WHERE meal_plan_id = ? AND week_number = ? AND day_of_week = ? AND meal_type = 'lounas2' ''',
+            (plan_id, week, day_of_week))
+        conn.commit()
+        conn.close()
+        return jsonify({'message': 'Toinen pääruoka poistettu', 'removed': cur.rowcount > 0})
+
+    try:
+        recipe_id = int(recipe_id)
+    except (TypeError, ValueError):
+        conn.close()
+        return jsonify({'error': 'Virheellinen resepti'}), 400
+    if not conn.execute('SELECT id FROM recipes WHERE id = ?', (recipe_id,)).fetchone():
+        conn.close()
+        return jsonify({'error': 'Reseptiä ei löydy'}), 404
+
+    existing = conn.execute(
+        '''SELECT id FROM meal_plan_days
+           WHERE meal_plan_id = ? AND week_number = ? AND day_of_week = ? AND meal_type = 'lounas2' ''',
+        (plan_id, week, day_of_week)).fetchone()
+    if existing:
+        conn.execute('UPDATE meal_plan_days SET recipe_id = ? WHERE id = ?', (recipe_id, existing['id']))
+    else:
+        base = conn.execute(
+            '''SELECT id FROM meal_plan_days
+               WHERE meal_plan_id = ? AND week_number = ? AND day_of_week = ? AND meal_type = 'lounas' ''',
+            (plan_id, week, day_of_week)).fetchone()
+        if not base:
+            conn.close()
+            return jsonify({'error': 'Päivää ei löytynyt tältä ruokalistalta'}), 404
+        conn.execute(
+            '''INSERT INTO meal_plan_days (meal_plan_id, week_number, day_of_week, recipe_id, meal_type)
+               VALUES (?, ?, ?, ?, 'lounas2')''',
+            (plan_id, week, day_of_week, recipe_id))
+    conn.commit()
+    conn.close()
+    return jsonify({'message': 'Toinen pääruoka tallennettu'})
+
+
 @app.route('/api/plans/<int:plan_id>/suggestions')
 def meal_suggestions(plan_id):
     """Suggest same-category replacements for a slot."""
-    week = int(request.args.get('week'))
-    slot = int(request.args.get('slot'))
+    try:
+        week = _int_arg(request.args, 'week')
+        slot = _int_arg(request.args, 'slot')
+    except _BadIntArg as e:
+        return jsonify({'error': e.message}), 400
     meal_type = request.args.get('meal_type', 'lounas')
     modifier = MealModifier(DB_PATH)
     suggestions = modifier.suggest_recipe_replacement(plan_id, week, slot, meal_type)
@@ -1207,34 +1895,49 @@ def export_menu(plan_id):
     """
     from datetime import datetime as _dt
     fmt = request.args.get('format', 'pdf')
-    week = int(request.args.get('week', 1))
-    year = int(request.args.get('year', _dt.now().year))
+    try:
+        week = _int_arg(request.args, 'week', 1)
+        year = _int_arg(request.args, 'year', _dt.now().year)
+    except _BadIntArg as e:
+        return jsonify({'error': e.message}), 400
 
     conn = get_db()
-    plan = conn.execute('SELECT name FROM meal_plans WHERE id = ?', (plan_id,)).fetchone()
+    plan = conn.execute('SELECT name, facility FROM meal_plans WHERE id = ?', (plan_id,)).fetchone()
     if not plan:
         conn.close()
         return jsonify({'error': 'Ruokalistaa ei löydy'}), 404
-    rows = conn.execute(
-        '''SELECT d.day_of_week, d.meal_type, r.name_fi, r.dish_category, r.notes
-           FROM meal_plan_days d JOIN recipes r ON r.id = d.recipe_id
-           WHERE d.meal_plan_id = ? AND d.week_number = ?
-           ORDER BY d.day_of_week''', (plan_id, week)).fetchall()
+    facility = plan['facility'] or 'kesti'
+    days_per_week = FACILITY_DAYS_PER_WEEK.get(facility, 5)
+    day_rows = _effective_meal_plan_days(conn, plan_id, week=week)
+    recipe_ids = list({r['recipe_id'] for r in day_rows})
+    recipes_by_id = {}
+    if recipe_ids:
+        placeholders = ','.join('?' * len(recipe_ids))
+        recipes_by_id = {rr['id']: rr for rr in conn.execute(
+            f'SELECT id, name_fi, dish_category, notes FROM recipes WHERE id IN ({placeholders})',
+            recipe_ids).fetchall()}
     conn.close()
-    if not rows:
+    if not day_rows:
         return jsonify({'error': f'Viikolle {week} ei löytynyt aterioita'}), 404
+    rows = [{'day_of_week': r['day_of_week'], 'meal_type': r['meal_type'], 'dessert_text': r['dessert_text'],
+            'name_fi': recipes_by_id[r['recipe_id']]['name_fi'],
+            'dish_category': recipes_by_id[r['recipe_id']]['dish_category'],
+            'notes': recipes_by_id[r['recipe_id']]['notes']} for r in day_rows]
 
     # Real per-weekday soup/main/salad, built directly from the generator's
     # own assignment — no name-pattern heuristics needed, the roles are
     # already known (meal_type: 'keitto'/'salaatti'/'lounas').
-    meals = [{'soup': None, 'main': None, 'salad': None, 'sides': None} for _ in range(5)]
+    meals = [{'soup': None, 'main': None, 'main2': None, 'salad': None, 'sides': None} for _ in range(days_per_week)]
+    dessert_text = None
     for r in rows:
         weekday = r['day_of_week']
-        if not (0 <= weekday <= 4):
+        if not (0 <= weekday < days_per_week):
             continue
         role = MEAL_ROLE_BY_TYPE.get(r['meal_type'], 'main')
         meals[weekday][role] = {'name': r['name_fi'], 'category': r['dish_category'],
                                 'notes': r['notes']}
+        if weekday == DESSERT_DAY_BY_FACILITY.get(facility) and r['dessert_text']:
+            dessert_text = r['dessert_text']
 
     if fmt == 'docx':
         try:
@@ -1242,22 +1945,172 @@ def export_menu(plan_id):
         except ImportError:
             return jsonify({'error': 'python-docx-kirjasto puuttuu. Aja KAYNNISTA.bat uudelleen.'}), 500
         out = os.path.join(OUTPUT_DIR, f'viikkomenu_plan{plan_id}_vko{week}.docx')
-        path, _ = build_week_menu(meals, week, year, out)
-        return send_file(path, as_attachment=True, download_name=f'viikkomenu_vko{week}.docx')
+        path, _ = build_week_menu(meals, week, year, out, day_names=WEEKDAY_LABELS[:days_per_week])
+        download_name = f'viikkomenu_vko{week}.docx'
+    elif facility == 'hoiva':
+        variant = request.args.get('variant', 'tammikoti')
+        if variant not in ('tammikoti', 'asukas'):
+            return jsonify({'error': 'Tuntematon pohja'}), 400
+        try:
+            from menu_pdf_generator import build_hoiva_menu_pdf
+        except ImportError as e:
+            return jsonify({'error': f'PDF-kirjasto puuttuu ({e}). Aja KAYNNISTA.bat uudelleen.'}), 500
+        out = os.path.join(OUTPUT_DIR, f'viikkomenu_{variant}_plan{plan_id}_vko{week}.pdf')
+        build_hoiva_menu_pdf(meals, week, year, out, variant=variant,
+                             dessert_day=DESSERT_DAY_BY_FACILITY.get('hoiva'),
+                             dessert_text=dessert_text)
+        path = out
+        download_name = f'viikkomenu_{variant}_vko{week}.pdf'
+    elif facility == 'kymenkartano':
+        try:
+            from menu_pdf_generator import build_kymenkartano_menu_pdf
+        except ImportError as e:
+            return jsonify({'error': f'PDF-kirjasto puuttuu ({e}). Aja KAYNNISTA.bat uudelleen.'}), 500
+        out = os.path.join(OUTPUT_DIR, f'viikkomenu_plan{plan_id}_vko{week}.pdf')
+        build_kymenkartano_menu_pdf(meals, week, year, out,
+                                    dessert_day=DESSERT_DAY_BY_FACILITY.get('kymenkartano'),
+                                    dessert_text=dessert_text)
+        path = out
+        download_name = f'viikkomenu_vko{week}.pdf'
+    else:
+        if facility != 'kesti':
+            return jsonify({'error': f'{FACILITIES.get(facility, facility)}-toimipisteelle ei ole vielä '
+                                     'omaa graafista PDF-pohjaa — käytä toistaiseksi Word-vientiä.'}), 400
+        try:
+            from menu_pdf_generator import build_week_menu_pdf
+        except ImportError as e:
+            return jsonify({'error': f'PDF-kirjasto puuttuu ({e}). Aja KAYNNISTA.bat uudelleen.'}), 500
+        out = os.path.join(OUTPUT_DIR, f'viikkomenu_plan{plan_id}_vko{week}.pdf')
+        path, _ = build_week_menu_pdf(meals, week, year, out)
+        download_name = f'viikkomenu_vko{week}.pdf'
+
+    # Työpöytäversion sisäinen ikkuna (pywebview/WebView2) ei tue selaimen
+    # normaalia lataustoimintoa — JS:llä laukaistu blob-lataus ei näy
+    # käyttäjälle mitenkään, vaikka tiedosto syntyy palvelimella onnistuneesti.
+    # Palvelin ja käyttöliittymä ajavat samalla koneella, joten kopioidaan
+    # tiedosto suoraan käyttäjän oikeaan Lataukset-kansioon sen sijaan että
+    # yritettäisiin selaimen kautta tapahtuvaa latausta.
+    saved_path = _save_to_downloads(path, download_name)
+
+    return jsonify({
+        'message': f'Viikkomenu tallennettu Lataukset-kansioon: {download_name}',
+        'filename': download_name,
+        'saved_path': saved_path,
+    })
+
+
+@app.route('/api/plans/<int:plan_id>/instructions-pdf')
+def export_instructions_pdf(plan_id):
+    """Print all cooking instructions for one week's meals, grouped by
+    day, for kitchen staff — uses the real per-recipe instructions column
+    (not the ticket's assumed 'notes' field, which holds diet/allergen
+    codes, and not the dead recipes.ingredients JSON)."""
+    try:
+        week = _int_arg(request.args, 'week', 1)
+        target_servings = _optional_int_arg(request.args, 'servings')
+    except _BadIntArg as e:
+        return jsonify({'error': e.message}), 400
+    if target_servings is not None and not (1 <= target_servings <= 2000):
+        return jsonify({'error': 'Annosmäärän pitää olla 1-2000'}), 400
+
+    conn = get_db()
+    plan = conn.execute('SELECT name, facility FROM meal_plans WHERE id = ?', (plan_id,)).fetchone()
+    if not plan:
+        conn.close()
+        return jsonify({'error': 'Ruokalistaa ei löydy'}), 404
+    facility = plan['facility'] or 'kesti'
+    days_per_week = FACILITY_DAYS_PER_WEEK.get(facility, 5)
+    day_rows = _effective_meal_plan_days(conn, plan_id, week=week)
+    recipe_ids = list({r['recipe_id'] for r in day_rows})
+    recipes_by_id = {}
+    ingredients_by_recipe = defaultdict(list)
+    if recipe_ids:
+        placeholders = ','.join('?' * len(recipe_ids))
+        recipes_by_id = {rr['id']: rr for rr in conn.execute(
+            f'SELECT id, name_fi, instructions, servings FROM recipes WHERE id IN ({placeholders})',
+            recipe_ids).fetchall()}
+        for rr in conn.execute(
+                f'''SELECT ri.recipe_id, i.name_fi, ri.quantity, ri.unit
+                    FROM recipe_ingredients ri JOIN ingredients i ON i.id = ri.ingredient_id
+                    WHERE ri.recipe_id IN ({placeholders})
+                    ORDER BY ri.sort_order, i.name_fi''', recipe_ids).fetchall():
+            ingredients_by_recipe[rr['recipe_id']].append(rr)
+    conn.close()
+    if not day_rows:
+        return jsonify({'error': f'Viikolle {week} ei löytynyt aterioita'}), 404
+
+    role_labels = {'keitto': 'Keitto', 'salaatti': 'Salaatti'}
+    days_data = [[] for _ in range(days_per_week)]
+    missing_servings = set()
+    for r in day_rows:
+        weekday = r['day_of_week']
+        if not (0 <= weekday < days_per_week):
+            continue
+        rr = recipes_by_id[r['recipe_id']]
+        if target_servings:
+            base = rr['servings'] or DEFAULT_SERVINGS
+            if not rr['servings']:
+                missing_servings.add(rr['name_fi'])
+            factor = target_servings / base
+        else:
+            factor = 1
+        ingredients = [{'name_fi': ing['name_fi'],
+                        'quantity': round(ing['quantity'] * factor, 3) if ing['quantity'] is not None else None,
+                        'unit': ing['unit']}
+                      for ing in ingredients_by_recipe.get(r['recipe_id'], [])]
+        days_data[weekday].append({
+            'role_label': role_labels.get(r['meal_type'], 'Pääruoka'),
+            'name_fi': rr['name_fi'],
+            'instructions': rr['instructions'],
+            'ingredients': ingredients,
+        })
 
     try:
-        from menu_pdf_generator import build_week_menu_pdf
+        from menu_pdf_generator import build_kitchen_instructions_pdf
     except ImportError as e:
         return jsonify({'error': f'PDF-kirjasto puuttuu ({e}). Aja KAYNNISTA.bat uudelleen.'}), 500
-    out = os.path.join(OUTPUT_DIR, f'viikkomenu_plan{plan_id}_vko{week}.pdf')
-    path, _ = build_week_menu_pdf(meals, week, year, out)
-    return send_file(path, as_attachment=True, download_name=f'viikkomenu_vko{week}.pdf')
+
+    out = os.path.join(OUTPUT_DIR, f'valmistusohjeet_plan{plan_id}_vko{week}.pdf')
+    build_kitchen_instructions_pdf(week, WEEKDAY_LABELS[:days_per_week], days_data, out)
+    download_name = f'valmistusohjeet_vko{week}.pdf'
+    saved_path = _save_to_downloads(out, download_name)
+
+    message = f'Valmistusohjeet tallennettu Lataukset-kansioon: {download_name}'
+    if missing_servings:
+        message += (f' — huom: {len(missing_servings)} reseptillä ei annosmäärää, '
+                    f'skaalattu olettaen {DEFAULT_SERVINGS} annosta: ' +
+                    ', '.join(sorted(missing_servings)[:8]) +
+                    ('…' if len(missing_servings) > 8 else ''))
+    return jsonify({
+        'message': message,
+        'filename': download_name,
+        'saved_path': saved_path,
+    })
+
+
+@app.route('/api/open-downloads-folder', methods=['POST'])
+def open_downloads_folder():
+    """Avaa käyttäjän Lataukset-kansion Resurssienhallinnassa — kätevä
+    jatko sille, että viedyt tiedostot kirjoitetaan suoraan sinne (ks.
+    _save_to_downloads), koska pywebviewin sisäinen ikkuna ei tarjoa mitään
+    muuta tapaa nähdä missä ladattu tiedosto on."""
+    try:
+        os.startfile(_downloads_dir())
+        return jsonify({'message': 'Lataukset-kansio avattu'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/plans/<int:plan_id>/kespro')
 def export_kespro(plan_id):
     """Generate a weekly Kespro order template (Excel) for a given week."""
-    week = int(request.args.get('week', 1))
+    try:
+        week = _int_arg(request.args, 'week', 1)
+        target_servings = _optional_int_arg(request.args, 'servings')
+    except _BadIntArg as e:
+        return jsonify({'error': e.message}), 400
+    if target_servings is not None and not (1 <= target_servings <= 2000):
+        return jsonify({'error': 'Annosmäärän pitää olla 1-2000'}), 400
     from openpyxl import Workbook
     from openpyxl.styles import Font
 
@@ -1267,28 +2120,66 @@ def export_kespro(plan_id):
         conn.close()
         return jsonify({'error': 'Ruokalistaa ei löydy'}), 404
 
-    rows = conn.execute(
-        '''SELECT d.day_of_week, r.name_fi, r.dish_category
-           FROM meal_plan_days d JOIN recipes r ON d.recipe_id = r.id
-           WHERE d.meal_plan_id = ? AND d.week_number = ?
-           ORDER BY d.day_of_week''', (plan_id, week)).fetchall()
+    # Mirror-aware: for Hoiva this must include the linked Kesti plan's
+    # ma-pe recipes, not just Hoiva's own (la-su-only) rows. recipe_id_list
+    # keeps duplicates (same recipe used on 2 different days that week
+    # must be counted/ordered twice), distinct_ids is only for the lookups.
+    day_rows = _effective_meal_plan_days(conn, plan_id, week=week)
+    recipe_id_list = [r['recipe_id'] for r in day_rows]
+    distinct_ids = list(set(recipe_id_list))
 
-    # Aggregated ingredient quantities (when recipes have linked ingredients)
-    ing_rows = conn.execute(
-        '''SELECT i.name_fi, SUM(ri.quantity) AS total, ri.unit
-           FROM meal_plan_days d
-           JOIN recipe_ingredients ri ON ri.recipe_id = d.recipe_id
-           JOIN ingredients i ON i.id = ri.ingredient_id
-           WHERE d.meal_plan_id = ? AND d.week_number = ?
-           GROUP BY i.name_fi, ri.unit ORDER BY i.name_fi''', (plan_id, week)).fetchall()
+    recipe_info = {}
+    ing_by_recipe = defaultdict(list)
+    if distinct_ids:
+        placeholders = ','.join('?' * len(distinct_ids))
+        recipe_info = {rr['id']: rr for rr in conn.execute(
+            f'SELECT id, name_fi, dish_category, servings FROM recipes WHERE id IN ({placeholders})',
+            distinct_ids).fetchall()}
+        for rr in conn.execute(
+                f'''SELECT ri.recipe_id, i.name_fi, ri.quantity, ri.unit
+                    FROM recipe_ingredients ri JOIN ingredients i ON i.id = ri.ingredient_id
+                    WHERE ri.recipe_id IN ({placeholders})''', distinct_ids).fetchall():
+            ing_by_recipe[rr['recipe_id']].append(rr)
     conn.close()
+
+    rows = [{'day_of_week': r['day_of_week'], 'name_fi': recipe_info[r['recipe_id']]['name_fi'],
+            'dish_category': recipe_info[r['recipe_id']]['dish_category']} for r in day_rows]
+
+    # Aggregated ingredient quantities (when recipes have linked ingredients),
+    # scaled per recipe to target_servings if given — recipes are written
+    # for whatever batch they were originally portioned for (commonly
+    # 4-10 servings), not the restaurant's actual daily headcount.
+    missing_servings = set()
+    agg = defaultdict(lambda: {'total': 0.0, 'unit': '', 'has_qty': False})
+    for rid in recipe_id_list:
+        if target_servings:
+            base = recipe_info[rid]['servings'] or DEFAULT_SERVINGS
+            if not recipe_info[rid]['servings']:
+                missing_servings.add(recipe_info[rid]['name_fi'])
+            factor = target_servings / base
+        else:
+            factor = 1
+        for ing in ing_by_recipe.get(rid, []):
+            key = (ing['name_fi'], ing['unit'])
+            if ing['quantity'] is not None:
+                agg[key]['total'] += ing['quantity'] * factor
+                agg[key]['has_qty'] = True
+            agg[key]['unit'] = ing['unit']
+    ing_rows = [{'name_fi': k[0], 'unit': k[1], 'total': round(v['total'], 3) if v['has_qty'] else None}
+               for k, v in sorted(agg.items())]
 
     wb = Workbook()
     ws = wb.active
     ws.title = f'Viikko {week}'
     ws['A1'] = f'KESPRO-TILAUSPOHJA — {plan["name"]} — Viikko {week}'
     ws['A1'].font = Font(bold=True, size=13)
-    ws['A2'] = f'Luotu: {datetime.now().strftime("%d.%m.%Y %H:%M")}'
+    servings_note = f' — mitoitettu {target_servings} annokselle' if target_servings else ''
+    ws['A2'] = f'Luotu: {datetime.now().strftime("%d.%m.%Y %H:%M")}{servings_note}'
+    if missing_servings:
+        ws['A3'] = (f'Huom: {len(missing_servings)} reseptillä ei annosmäärää — '
+                    f'skaalattu olettaen {DEFAULT_SERVINGS} annosta: ' +
+                    ', '.join(sorted(missing_servings)[:8]) +
+                    ('…' if len(missing_servings) > 8 else ''))
 
     headers = ['Kespro-tuotenumero', 'Tuote', 'Yksikkö', 'Määrä', 'Toimituspäivä', 'Huomiot']
     for col, h in enumerate(headers, 1):
@@ -1302,7 +2193,7 @@ def export_kespro(plan_id):
             ws.cell(row, 1, '')  # SKU filled in by staff / future mapping
             ws.cell(row, 2, ing['name_fi'])
             ws.cell(row, 3, ing['unit'])
-            ws.cell(row, 4, round(ing['total'], 2))
+            ws.cell(row, 4, round(ing['total'], 2) if ing['total'] is not None else '')
             ws.cell(row, 5, delivery)
             row += 1
     else:
@@ -1714,12 +2605,18 @@ def import_poweresta():
                 name = str(ws.cell(start, 2).value or '').strip()
                 if not name:
                     continue
-                diet, ingredients, ingredients_struct = '', [], []
+                diet, ingredients, ingredients_struct, instructions = '', [], [], []
+                servings = None
                 in_rivit = False
                 for r in range(start, end):
                     label = str(ws.cell(r, 1).value or '').strip()
                     if label == 'Ruokavaliot':
                         diet = str(ws.cell(r, 2).value or '').strip()
+                    if label == 'Annosmäärä':
+                        try:
+                            servings = int(ws.cell(r, 2).value)
+                        except (TypeError, ValueError):
+                            servings = None
                     if label == 'Rivit' or str(ws.cell(r, 2).value or '').strip() == 'Otsikko':
                         in_rivit = True
                         continue
@@ -1731,10 +2628,16 @@ def import_poweresta():
                         if qty_raw in (None, ''):
                             qty_raw = ws.cell(r, 4).value
                         if ing:
-                            ingredients.append(ing)
                             qty, unit = _parse_qty(qty_raw)
                             if qty is not None:
+                                ingredients.append(ing)
                                 ingredients_struct.append({'name': ing, 'qty': qty, 'unit': unit})
+                            else:
+                                # "Raaka-aine / työohje" -sarake kantaa myös
+                                # työohjeita — oikeissa PoweResta-tiedostoissa
+                                # ne ovat rivejä joilla ei ole määrää (yksi
+                                # ohjerivi per valmistusvaihe/ryhmä).
+                                instructions.append(ing)
                 ing_text = ' '.join(ingredients)
                 recipes.append({
                     'name_fi': name,
@@ -1742,13 +2645,13 @@ def import_poweresta():
                     'source_site': f'PoweResta-tuonti ({f.filename})',
                     'ingredients_raw': ingredients,
                     'ingredients_struct': ingredients_struct,
-                    'instructions_raw': '',
+                    'instructions_raw': '\n'.join(instructions),
                     'season': guess_season(name, ing_text) or 'kaikki',
                     'meal_type': 'lounas',
                     'dish_category': guess_category(name, ing_text),
                     'prep_time_min': None,
                     'difficulty': None,
-                    'servings': None,
+                    'servings': servings,
                     'notes': f'Ruokavaliot: {diet}' if diet else '',
                     'scraped_at': _dt.now().isoformat(),
                 })
@@ -1856,6 +2759,9 @@ def _ensure_user_recipe_tables(conn):
             ingredient_instruction TEXT
         );
     """)
+    _cols = [r[1] for r in conn.execute('PRAGMA table_info(user_recipes)').fetchall()]
+    if 'recipe_type' not in _cols:
+        conn.execute("ALTER TABLE user_recipes ADD COLUMN recipe_type TEXT DEFAULT 'pääruoka'")
 
 
 def _fetch_user_recipe_ingredients(conn, user_recipe_id):
@@ -1876,6 +2782,7 @@ def contribute_recipe():
     category = d.get('dish_category')
     if not name or season not in SEASONS or category not in CATEGORIES:
         return jsonify({'error': 'Nimi, kausi ja kategoria vaaditaan'}), 400
+    recipe_type = d.get('recipe_type') if d.get('recipe_type') in RECIPE_TYPES else 'pääruoka'
 
     rows = [row for row in (d.get('ingredients') or []) if (row.get('name') or '').strip()]
 
@@ -1885,12 +2792,12 @@ def contribute_recipe():
         try:
             cur = conn.execute(
                 '''INSERT INTO user_recipes
-                   (name_fi, season, meal_type, dish_category, instructions_raw, notes,
+                   (name_fi, season, meal_type, dish_category, recipe_type, instructions_raw, notes,
                     created_by_user_id, created_by_username)
-                   VALUES (?,?,?,?,?,?,?,?)''',
-                (name, season, d.get('meal_type', 'lounas'), category,
+                   VALUES (?,?,?,?,?,?,?,?,?)''',
+                (name, season, d.get('meal_type', 'lounas'), category, recipe_type,
                  d.get('instructions_raw', ''), d.get('notes', ''),
-                 session.get('user_id'), session.get('username')))
+                 None, 'admin'))
         except sqlite3.IntegrityError:
             return jsonify({'error': f"'{name}' odottaa jo hyväksyntää tai on jo olemassa"}), 409
         uid = cur.lastrowid
@@ -1914,7 +2821,6 @@ def contribute_recipe():
 
 
 @app.route('/api/recipes/pending')
-@role_required('admin')
 def list_pending_recipes():
     conn = get_db()
     try:
@@ -1932,7 +2838,6 @@ def list_pending_recipes():
 
 
 @app.route('/api/recipes/pending/<int:uid>/approve', methods=['POST'])
-@role_required('admin')
 def approve_pending_recipe(uid):
     """Move a pending user recipe into the shared recipes + recipe_ingredients tables."""
     d = request.json or {}
@@ -1946,6 +2851,9 @@ def approve_pending_recipe(uid):
         name = (d.get('name_fi') or row['name_fi']).strip()
         season = d.get('season') or row['season']
         category = d.get('dish_category') or row['dish_category']
+        recipe_type = d.get('recipe_type') or row['recipe_type'] or 'pääruoka'
+        if recipe_type not in RECIPE_TYPES:
+            recipe_type = 'pääruoka'
         ingredient_rows = _fetch_user_recipe_ingredients(conn, uid)
         ingredients_struct = []
         for ing in ingredient_rows:
@@ -1958,8 +2866,9 @@ def approve_pending_recipe(uid):
         db = MealPlanDB(DB_PATH)
         rid = db.add_recipe(
             name_fi=name, season=season, meal_type=row['meal_type'],
-            dish_category=category,
-            notes=((row['notes'] or '') + ' [käyttäjän lisäämä]').strip())
+            dish_category=category, recipe_type=recipe_type,
+            notes=((row['notes'] or '') + ' [käyttäjän lisäämä]').strip(),
+            instructions=row['instructions_raw'] or '')
         if rid is None:
             existing = conn.execute('SELECT id FROM recipes WHERE name_fi=?', (name,)).fetchone()
             rid = existing['id'] if existing else None
@@ -1968,8 +2877,9 @@ def approve_pending_recipe(uid):
             _set_recipe_source(conn, rid, 'user_contributed')
         _save_recipe_ingredients(rid, [it for it in ingredients_struct if it['qty'] is not None])
         # jätä rivi tauluun approved=1:llä (historia + PoweResta-vientiä varten)
-        conn.execute('''UPDATE user_recipes SET name_fi=?, season=?, dish_category=?, approved=1
-                        WHERE id=?''', (name, season, category, uid))
+        conn.execute('''UPDATE user_recipes SET name_fi=?, season=?, dish_category=?,
+                        recipe_type=?, approved=1 WHERE id=?''',
+                     (name, season, category, recipe_type, uid))
         conn.commit()
         return jsonify({'message': f"'{name}' hyväksytty ja lisätty reseptitietokantaan",
                         'recipe_id': rid})
@@ -1978,7 +2888,6 @@ def approve_pending_recipe(uid):
 
 
 @app.route('/api/recipes/pending/<int:uid>/reject', methods=['POST'])
-@role_required('admin')
 def reject_pending_recipe(uid):
     conn = get_db()
     try:
@@ -2003,7 +2912,6 @@ def _fmt_qty_unit(quantity, unit):
 
 
 @app.route('/api/recipes/export/poweresta')
-@role_required('admin')
 def export_user_recipes_poweresta():
     """Vie hyväksytyt käyttäjän lisäämät reseptit PoweResta-muotoisena Excelinä
     (varmuuskopiointiin, jakoon toisille keittiöille tai arkistointiin)."""
@@ -2143,7 +3051,7 @@ def export_selected_recipes_poweresta():
             ingredients = conn.execute(
                 '''SELECT i.name_fi AS ingredient_name, ri.quantity, ri.unit, ri.ingredient_instruction
                    FROM recipe_ingredients ri JOIN ingredients i ON i.id = ri.ingredient_id
-                   WHERE ri.recipe_id=? ORDER BY i.name_fi''', (r['id'],)).fetchall()
+                   WHERE ri.recipe_id=? ORDER BY ri.sort_order, i.name_fi''', (r['id'],)).fetchall()
 
             row = 4
             for ing in ingredients:
@@ -2443,7 +3351,6 @@ def _next_nightly_backup_time(after):
 
 
 @app.route('/api/health/status')
-@role_required('admin')
 def health_status():
     backups = _list_backups()
     alerts = []
@@ -2469,7 +3376,6 @@ def health_status():
 
 
 @app.route('/api/health/database')
-@role_required('admin')
 def health_database():
     conn = get_db()
     recipes_total = conn.execute('SELECT COUNT(*) FROM recipes').fetchone()[0]
@@ -2502,7 +3408,6 @@ def health_database():
 
 
 @app.route('/api/health/backups')
-@role_required('admin')
 def health_backups():
     backups = _list_backups()
     now = datetime.now()
@@ -2527,7 +3432,6 @@ def health_backups():
 
 
 @app.route('/api/health/quality')
-@role_required('admin')
 def health_quality():
     conn = get_db()
     recipes_without_ingredients = conn.execute(
@@ -2566,11 +3470,29 @@ def health_quality():
 
 
 @app.route('/api/health/integrity-check', methods=['POST'])
-@role_required('admin')
 def health_integrity_check():
     start = time.time()
     conn = get_db()
     errors = []
+
+    # Raakatason SQLite-tiedostotarkistus (btree/sivukorruptio) — eri asia kuin
+    # sovellustason orpo-rivien tarkistus alla, jota tämä ei korvaa.
+    integrity = conn.execute('PRAGMA integrity_check').fetchone()[0]
+    if integrity != 'ok':
+        errors.append(f'SQLite-tiedoston eheystarkistus epäonnistui: {integrity}')
+
+    bad_recipe_types = conn.execute(
+        "SELECT COUNT(*) FROM recipes WHERE recipe_type NOT IN "
+        "('pääruoka','keitto','salaatti','leivonta','jälkiruoka')"
+    ).fetchone()[0]
+    if bad_recipe_types:
+        errors.append(f'{bad_recipe_types} reseptillä on virheellinen recipe_type-arvo')
+
+    bad_roles = conn.execute(
+        "SELECT COUNT(*) FROM users WHERE role NOT IN ('admin','muokkaus','katselu')"
+    ).fetchone()[0]
+    if bad_roles:
+        errors.append(f'{bad_roles} käyttäjällä on virheellinen rooli')
 
     orphan_ri = conn.execute(
         '''SELECT COUNT(*) FROM recipe_ingredients
@@ -2616,6 +3538,41 @@ def health_integrity_check():
         'errors': errors,
         'scan_time_seconds': round(time.time() - start, 2),
         'checked_tables': checked,
+    })
+
+
+# requirements.txt -> (import-nimi, ihmisluettava nimi). pymupdf tuodaan
+# nimellä 'fitz', ei 'pymupdf' — ks. menu_pdf_generator.py.
+_DEPENDENCY_MODULES = [
+    ('flask', 'Flask'), ('werkzeug', 'Werkzeug'), ('openpyxl', 'openpyxl'),
+    ('requests', 'requests'), ('bs4', 'beautifulsoup4'), ('docx', 'python-docx'),
+    ('fitz', 'PyMuPDF'), ('reportlab', 'reportlab'), ('PIL', 'Pillow'),
+    ('pytesseract', 'pytesseract'), ('ctranslate2', 'ctranslate2'),
+    ('sentencepiece', 'sentencepiece'),
+]
+
+
+@app.route('/api/health/dependencies')
+def health_dependencies():
+    import importlib
+    results = []
+    for module_name, label in _DEPENDENCY_MODULES:
+        try:
+            importlib.import_module(module_name)
+            results.append({'name': label, 'ok': True})
+        except ImportError as e:
+            results.append({'name': label, 'ok': False, 'error': str(e)})
+
+    model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models', 'translate-en_fi')
+    translation_model_present = os.path.exists(os.path.join(model_dir, 'sentencepiece.model'))
+    results.append({'name': 'Käännösmalli (en->fi)', 'ok': translation_model_present})
+
+    missing = [r['name'] for r in results if not r['ok']]
+    return jsonify({
+        'status': 'ok' if not missing else 'error',
+        'checked': len(results),
+        'missing': missing,
+        'results': results,
     })
 
 

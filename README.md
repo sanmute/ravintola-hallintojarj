@@ -29,8 +29,6 @@ keittiön koneelle — ei vaadi Python-asennusta käyttökoneella.
   nollata.
 - **PoweResta-vienti**: valitut reseptit voi viedä Excel-tiedostoksi
   PoweResta-tuontia varten (yksi välilehti per resepti, määrät kiloina).
-- **Käyttäjäroolit**: `admin`, `muokkaus` ja `katselu` — pääkäyttäjällä on
-  pääsy mm. reseptien joukkopoistoon ja auditointiin.
 - **Automaattiset varmuuskopiot** tietokannasta (`backup.py`,
   `nightly_backup.py` + ajastettu Windows-tehtävä).
 
@@ -54,7 +52,6 @@ Tarkemmat käyttöohjeet: [OHJEET.md](OHJEET.md) ja
 
 ```
 app.py                    Flask-sovellus (reitit, API)
-auth.py                   Kirjautuminen ja roolit
 meal_plan_db.py           Tietokantamallit (SQLite)
 meal_plan_generator.py    Ruokalistan generointialgoritmi
 meal_plan_modifier.py     Yksittäisten aterioiden vaihto
@@ -77,3 +74,41 @@ templates/index.html      Käyttöliittymä (yksisivuinen, suomeksi)
 - openpyxl (Excel-vienti/-tuonti)
 - BeautifulSoup4 (reseptien haku)
 - PyInstaller (jakelupaketti)
+
+## Lisenssi ja Tekijänoikeudet
+
+### Tekijänoikeus ja Omistusoikeus
+
+**Ruokalistasuunnittelija** © 2026 Santeri Mutanen. Kaikki oikeudet pidätetään.
+
+Ohjelmiston lähdekoodi ja kaikki siihen liittyvät materiaalit (dokumentaatio, grafiikka, sisältö) ovat Santeri Mutasen omaisuutta ja tekijänoikeuden suojauksessa.
+
+### Käyttöoikeus
+
+Jyränkölän Setlementti / Kesti kahvila-ravintola / Ravintola Kymenkartano saa käyttää tätä ohjelmistoa ilmaiseksi ja rajoittamattomasti sekä pysyvästi. Tämä oikeus on ei-siirrettävä ja ei-luovutettava.
+
+Muut osapuolet eivät saa käyttää, kopioida tai levittää tätä ohjelmistoa ilman kirjallista lupaa sen luojalta ja julkaisijalta.
+
+### Kaupallinen Käyttö
+
+Kaupallinen lisensointi, mukautetut versiot ja white-label -ratkaisut ovat saatavilla. Lisätietoja: semutanen@gmail.com
+
+### Takuu
+
+Ohjelmisto toimitetaan "sellaisenaan" ilman takuuta. Tekijä ei ole vastuussa vahingoista, jotka aiheutuvat ohjelmiston käytöstä tai käytön estymisestä.
+
+### Kolmannen Osapuolen Ohjelmistot
+
+Ohjelmisto käyttää seuraavia avoimeen lähdekoodiin perustuvia kirjastoja (katso `requirements.txt`):
+
+- Flask (BSD)
+- openpyxl (MIT)
+- Pillow (HPND)
+- PyMuPDF (AGPL)
+- python-docx (MIT)
+
+Ja muita. Jokaisen kirjaston tekijänoikeus säilyy alkuperäisen tekijän hallinnassa. Ruokalistasuunnitelijan luoja ei vastaa työkalun mahdollisen käytön estymisestä jonkin näistä kirjastoista vanhennuttua, poistuttua levityksestä tai "rikkouduttua". Näissä tapauksissa ota välittömästi yhteys email: semutanen@gmail.com. Näissä tapauksissa ongelman korjauksesta ei koidu ylimääräistä kustannusta.
+
+## Tekijä
+
+Santeri Elias Mutanen, 0442012530

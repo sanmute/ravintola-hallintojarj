@@ -35,8 +35,20 @@ REVIEW_FILE = 'recipes_for_review.json'
 # deliberately Finnish-first, with English/Swedish variants for recipes that
 # are published in more than one language.
 INGREDIENT_HEADINGS = {
-    'ainekset', 'ainesosat', 'raaka-aineet', 'tarvitset', 'tarvikkeet',
+    # _normalise_heading() strips spaces AND hyphens, so entries here must
+    # already be in that stripped form (a bug fix — 'raaka-aineet', an
+    # extremely common Finnish heading, never matched before this because
+    # the heading text got its hyphen stripped while this literal didn't).
+    'ainekset', 'ainesosat', 'raakaaineet', 'tarvitset', 'tarvikkeet',
     'ingredients', 'ingredienter', 'ingredienser',
+}
+
+# Same idea for the instructions section — sites vary in wording. Also
+# pre-stripped of spaces/hyphens to match what _normalise_heading() produces.
+INSTRUCTION_HEADINGS = {
+    'ohje', 'ohjeet', 'valmistusohje', 'valmistusohjeet', 'valmistus',
+    'vaiheet', 'tekoohje', 'näinteetsen', 'näinvalmistat', 'valmistaminen',
+    'instructions', 'directions', 'method',
 }
 
 
@@ -79,6 +91,47 @@ def extract_ingredients_from_html(soup):
         lines = [line for line in lines if line]
         if lines:
             return lines
+    return []
+
+
+def extract_instructions_from_html(soup):
+    """Read cooking instructions presented as normal HTML, below a heading
+    like 'Ohje', 'Valmistusohje' or 'Vaiheet'.
+
+    JSON-LD (recipeInstructions) remains the preferred source — this is a
+    fallback for pages that either lack Recipe JSON-LD entirely or have it
+    without the instructions field populated.
+    """
+    for heading in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'strong', 'b']):
+        if _normalise_heading(heading.get_text(' ', strip=True)) not in INSTRUCTION_HEADINGS:
+            continue
+
+        for sibling in heading.find_all_next(['ul', 'ol', 'p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'], limit=12):
+            if sibling is not heading and sibling.name.startswith('h'):
+                break
+            if sibling.name in ('ul', 'ol'):
+                lines = [li.get_text(' ', strip=True) for li in sibling.find_all('li')]
+                lines = [line for line in lines if line]
+                if lines:
+                    return lines
+            if sibling.name in ('p', 'div'):
+                text = sibling.get_text(' ', strip=True)
+                # A real instruction step reads as a sentence — skip short
+                # fragments (nav labels, empty spacer divs, etc.)
+                if text and len(text) > 15:
+                    return [text]
+
+    # Some sites use a semantic class but no visible heading.
+    for container in soup.select('[class*="instruction" i], [id*="instruction" i], '
+                                 '[class*="valmistus" i], [id*="valmistus" i], '
+                                 '[class*="ohje" i], [id*="ohje" i]'):
+        lines = [li.get_text(' ', strip=True) for li in container.find_all('li')]
+        lines = [line for line in lines if line]
+        if lines:
+            return lines
+        text = container.get_text(' ', strip=True)
+        if text and len(text) > 15:
+            return [text]
     return []
 
 
@@ -275,6 +328,11 @@ def scrape_recipe(url):
             else:
                 parts.append(str(step))
         instructions = ' '.join(p for p in parts if p)
+    if not instructions:
+        # JSON-LD had no recipeInstructions (common — many sites only put
+        # ingredients in structured data) — look for a heading like
+        # "Ohje"/"Valmistusohje"/"Vaiheet" and take what follows it.
+        instructions = ' '.join(extract_instructions_from_html(soup))
 
     prep = parse_iso_duration(recipe.get('totalTime')) or \
            parse_iso_duration(recipe.get('cookTime')) or \
