@@ -17,7 +17,6 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 datas = [
     ('templates', 'templates'),
-    ('static', 'static'),
     ('templates_src', 'templates_src'),   # brändätty menupohja
     ('models', 'models'),                 # paikallinen en->fi käännösmalli (ctranslate2)
 ]
