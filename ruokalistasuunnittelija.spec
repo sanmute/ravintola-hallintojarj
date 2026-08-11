@@ -50,4 +50,5 @@ exe = EXE(
     name='Ruokalistasuunnittelija',
     console=False,           # ei mustaa komentoikkunaa
     icon='kesti.ico',
+    onefile=True,
 )
