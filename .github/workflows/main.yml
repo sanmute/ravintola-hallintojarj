@@ -17,10 +17,10 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
     
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.9'
     
@@ -47,27 +47,14 @@ jobs:
       run: dir dist\
       shell: cmd
     
-    - name: Create Release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: build-${{ github.run_number }}
-        release_name: Build ${{ github.run_number }}
-        body: |
-          Automatic build from commit ${{ github.sha }}
-          
-          **Changes in this build:**
-          ${{ github.event.head_commit.message }}
-          
-          Download the .exe file below to run on Windows.
-        draft: false
-        prerelease: false
-    
     - name: Upload EXE to Release
       uses: softprops/action-gh-release@v1
       with:
         files: ./dist/ruokalistasuunnittelija.exe
+        tag_name: build-${{ github.run_number }}
+        name: Build ${{ github.run_number }}
+        body: |
+          Automatic build from commit ${{ github.sha }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     
