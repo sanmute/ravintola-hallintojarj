@@ -58,6 +58,8 @@
           color:#222; border:1px solid rgba(0,0,0,.12); line-height:1.3; }
   .meal:hover { outline:2px solid #1a5c3a; }
   .meal .slot { font-size:10px; opacity:.65; font-weight:400; }
+  .day-block.drag-over { outline:3px dashed #1a5c3a; border-radius:8px; }
+  .accessory-chip:active { cursor:grabbing; }
   /* modal */
   .overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:50;
              align-items:center; justify-content:center; }
@@ -256,6 +258,9 @@
           <option value="salaatti">🥗 Salaatti</option>
           <option value="leivonta">🥐 Leivonta</option>
           <option value="jälkiruoka">🍰 Jälkiruoka</option>
+          <option value="kastike">🥣 Kastike (vain Kesti)</option>
+          <option value="kasvislisäke">🥦 Kasvislisäke (vain Kesti)</option>
+          <option value="energialisäke">🥔 Energialisäke (vain Kesti)</option>
         </select></div>
       <div><label>Annosmäärä (valinnainen)</label>
         <input type="number" id="newServings" min="1" max="500" placeholder="esim. 8"></div>
@@ -307,6 +312,9 @@
           <option value="salaatti">🥗 Salaatti</option>
           <option value="leivonta">🥐 Leivonta</option>
           <option value="jälkiruoka">🍰 Jälkiruoka</option>
+          <option value="kastike">🥣 Kastike (vain Kesti)</option>
+          <option value="kasvislisäke">🥦 Kasvislisäke (vain Kesti)</option>
+          <option value="energialisäke">🥔 Energialisäke (vain Kesti)</option>
         </select></div>
     </div>
     <div style="display:flex; gap:.6rem; align-items:center; margin-top:10px; flex-wrap:wrap;">
@@ -970,17 +978,19 @@ Kiehauta vesi. Lisää liemikuutiot..."></textarea>
     <input id="changeRecipeSearch" placeholder="🔍 Hae nimestä…" oninput="renderChangeRecipeOptions()" style="margin-bottom:6px;">
     <select id="changeNewRecipe" size="8" style="width:100%;"></select>
     <div class="hint" id="changeRecipeCount" style="margin-bottom:8px;"></div>
-    <label>Syy vaihdolle</label>
-    <select id="changeReason">
-      <option>Toimitusongelma / raaka-ainepuute</option>
-      <option>Asiakastoive</option>
-      <option>Keittiön aikataulu</option>
-      <option>Muu syy</option>
-    </select>
-    <label>Tekijä</label>
-    <input id="changeBy" placeholder="Nimesi">
+    <div id="changeReasonBox">
+      <label>Syy vaihdolle</label>
+      <select id="changeReason">
+        <option>Toimitusongelma / raaka-ainepuute</option>
+        <option>Asiakastoive</option>
+        <option>Keittiön aikataulu</option>
+        <option>Muu syy</option>
+      </select>
+      <label>Tekijä</label>
+      <input id="changeBy" placeholder="Nimesi">
+    </div>
     <div style="display:flex; gap:10px;">
-      <button class="btn" onclick="submitChange()">Vaihda</button>
+      <button class="btn" id="changeSubmitBtn" onclick="submitChange()">Vaihda</button>
       <button class="btn secondary" onclick="closeModal()">Peruuta</button>
     </div>
   </div>
@@ -1007,6 +1017,9 @@ Kiehauta vesi. Lisää liemikuutiot..."></textarea>
       <option value="salaatti">🥗 Salaatti</option>
       <option value="leivonta">🥐 Leivonta</option>
       <option value="jälkiruoka">🍰 Jälkiruoka</option>
+      <option value="kastike">🥣 Kastike (vain Kesti)</option>
+      <option value="kasvislisäke">🥦 Kasvislisäke (vain Kesti)</option>
+      <option value="energialisäke">🥔 Energialisäke (vain Kesti)</option>
     </select>
     <label>Annosmäärä</label>
     <input type="number" id="editServings" min="1" max="500">
@@ -1599,9 +1612,12 @@ const SEASON_NAMES = {{ seasons | tojson }};
 const FACILITY_NAMES = { kesti: 'Kesti', hoiva: 'Hoiva', kymenkartano: 'Kymenkartano' };
 const DESSERT_DAY_BY_FACILITY = { kesti: 4, hoiva: 6, kymenkartano: 6 };  // ma=0..su=6 — pidä samassa kuin app.py
 const RECIPE_TYPE_COLORS = { 'keitto': '#2196F3', 'pääruoka': '#FF9800', 'salaatti': '#4CAF50',
-                              'leivonta': '#D4A574', 'jälkiruoka': '#E91E63' };
+                              'leivonta': '#D4A574', 'jälkiruoka': '#E91E63',
+                              'kastike': '#9C27B0', 'kasvislisäke': '#8BC34A', 'energialisäke': '#795548' };
 const RECIPE_TYPE_LABELS = { 'keitto': '🍲 Keitto', 'pääruoka': '🍽️ Pääruoka', 'salaatti': '🥗 Salaatti',
-                              'leivonta': '🥐 Leivonta', 'jälkiruoka': '🍰 Jälkiruoka' };
+                              'leivonta': '🥐 Leivonta', 'jälkiruoka': '🍰 Jälkiruoka',
+                              'kastike': '🥣 Kastike (vain Kesti)', 'kasvislisäke': '🥦 Kasvislisäke (vain Kesti)',
+                              'energialisäke': '🥔 Energialisäke (vain Kesti)' };
 function recipeTypeBadge(type) {
   const t = type || 'pääruoka';
   return `<span class="badge" style="background:${RECIPE_TYPE_COLORS[t] || '#999'}">${RECIPE_TYPE_LABELS[t] || t}</span>`;
@@ -2619,12 +2635,111 @@ function renderPager() {
 }
 
 const WEEKDAY_NAMES = ['Ma', 'Ti', 'Ke', 'To', 'Pe', 'La', 'Su'];  // kesti käyttää vain 0-4
-const ROLE_LABELS = { soup: 'Keitto', main: 'Pääruoka', main2: 'Pääruoka 2', salad: 'Salaatti' };
-const ROLE_MEAL_TYPE = { soup: 'keitto', main: 'lounas', main2: 'lounas2', salad: 'salaatti' };
+const ROLE_LABELS = { soup: 'Keitto', main: 'Pääruoka', main2: 'Pääruoka 2', main3: 'Pääruoka 3 (Hoivalle)', salad: 'Salaatti',
+                      sauce: 'Kastike', veg_side: 'Kasvislisäke', energy_side: 'Energialisäke' };
+const ROLE_MEAL_TYPE = { soup: 'keitto', main: 'lounas', main2: 'lounas2', main3: 'lounas3', salad: 'salaatti',
+                        sauce: 'kastike', veg_side: 'kasvislisäke', energy_side: 'energialisäke' };
+// Kestin vapaaehtoiset lisäykset (raahaa reseptikorttia päivälaatikkoon) —
+// koskee VAIN Kestiä, ei Hoivaa eikä Kymenkartanoa.
+const ACCESSORY_ROLES = { sauce: { endpoint: 'sauce', icon: '🥣' },
+                         veg_side: { endpoint: 'veg-side', icon: '🥦' },
+                         energy_side: { endpoint: 'energy-side', icon: '🥔' } };
+let accessoryTray = {};  // role -> { id, name_fi } current random suggestion shown in the tray chip
+
+async function rerollAccessory(role) {
+  try {
+    const r = await api(`/api/recipes/random?recipe_type=${encodeURIComponent(ROLE_MEAL_TYPE[role])}`);
+    accessoryTray[role] = r;
+  } catch (e) {
+    accessoryTray[role] = null;
+  }
+  renderAccessoryTray();
+}
+
+function renderAccessoryTray() {
+  const box = document.getElementById('accessoryTray');
+  if (!box) return;
+  if ((planData.facility || 'kesti') !== 'kesti') { box.innerHTML = ''; return; }
+  box.innerHTML = `<div class="hint" style="width:100%; margin-bottom:2px;">
+      Raahaa lisäke haluamallesi päivälle (vain Kesti, ei automaattinen osa listaa) — 📋 avaa koko listan, 🔁 vaihtaa satunnaisen ehdotuksen</div>` +
+    Object.entries(ACCESSORY_ROLES).map(([role, cfg]) => {
+      const sugg = accessoryTray[role];
+      return `<div class="meal accessory-chip" draggable="${sugg ? 'true' : 'false'}"
+              ondragstart="onAccessoryDragStart(event, '${role}')"
+              style="display:inline-flex; align-items:center; gap:6px; margin:4px 8px 4px 0; padding:6px 10px;
+                     background:${RECIPE_TYPE_COLORS[ROLE_MEAL_TYPE[role]]}22; border:1px dashed ${RECIPE_TYPE_COLORS[ROLE_MEAL_TYPE[role]]};
+                     border-radius:6px; cursor:${sugg ? 'grab' : 'default'};">
+          <span>${cfg.icon} ${ROLE_LABELS[role]}:</span>
+          <b>${sugg ? sugg.name_fi : '(ei reseptejä)'}</b>
+          <button class="btn small secondary" onclick="openAccessoryPicker('${role}')" title="Valitse listasta">📋</button>
+          <button class="btn small secondary" onclick="rerollAccessory('${role}')" title="Satunnainen ehdotus">🔁</button>
+        </div>`;
+    }).join('');
+}
+
+async function openAccessoryPicker(role) {
+  changeCtx = { pickingAccessory: role };
+  document.getElementById('changeCurrent').innerHTML =
+    `Valitse ${ROLE_LABELS[role].toLowerCase()} raahattavaksi laatikkoon`;
+  document.getElementById('changeRecipeSearch').value = '';
+  document.getElementById('changeReasonBox').style.display = 'none';
+  document.getElementById('changeSubmitBtn').textContent = 'Valitse';
+  const recipeType = ROLE_MEAL_TYPE[role];
+  const recipes = await api('/api/recipes').then(rs => rs.filter(r => r.recipe_type === recipeType));
+  changeRecipeOptions = recipes.map(r => ({ id: r.id, name: r.name_fi }));
+  renderChangeRecipeOptions();
+  document.getElementById('changeModal').classList.add('open');
+}
+
+function onAccessoryDragStart(ev, role) {
+  const sugg = accessoryTray[role];
+  if (!sugg) { ev.preventDefault(); return; }
+  ev.dataTransfer.setData('application/json', JSON.stringify({ role, id: sugg.id, name: sugg.name_fi }));
+  ev.dataTransfer.effectAllowed = 'copy';
+}
+
+function onDayDragOver(ev) {
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = 'copy';
+  ev.currentTarget.classList.add('drag-over');
+}
+
+function onDayDragLeave(ev) {
+  ev.currentTarget.classList.remove('drag-over');
+}
+
+async function onDayDrop(ev, day) {
+  ev.preventDefault();
+  ev.currentTarget.classList.remove('drag-over');
+  let payload;
+  try { payload = JSON.parse(ev.dataTransfer.getData('application/json')); } catch (e) { return; }
+  if (!payload || !ACCESSORY_ROLES[payload.role]) return;
+  const cfg = ACCESSORY_ROLES[payload.role];
+  try {
+    await api(`/api/plans/${currentPlanId}/${cfg.endpoint}`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ week: currentWeek, day_of_week: day, recipe_id: payload.id }) });
+    msg(`${ROLE_LABELS[payload.role]} lisätty: ${payload.name}`, true);
+    await rerollAccessory(payload.role);
+    planData = await api('/api/plans/' + currentPlanId);
+    renderWeek();
+  } catch (e) { msg(e.message, false); }
+}
+
+async function removeAccessory(week, day, role) {
+  const cfg = ACCESSORY_ROLES[role];
+  try {
+    await api(`/api/plans/${currentPlanId}/${cfg.endpoint}`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ week, day_of_week: day, recipe_id: null }) });
+    planData = await api('/api/plans/' + currentPlanId);
+    renderWeek();
+  } catch (e) { msg(e.message, false); }
+}
 
 function renderWeek() {
   const days = planData.weeks[currentWeek] || [];
-  const totalMeals = days.reduce((n, d) => n + ['soup', 'main', 'salad'].filter(r => d[r]).length, 0);
+  const totalMeals = days.reduce((n, d) => n + ['soup', 'main', 'main2', 'main3', 'salad'].filter(r => d[r]).length, 0);
   const facility = planData.facility || 'kesti';
   // Hoiva saa kaksi eri pohjaa (Tammikoti & Jyränköläkoti / Palvelutalon
   // asukas) samasta viikosta; Kymenkartanolla on oma pohjansa.
@@ -2639,6 +2754,9 @@ function renderWeek() {
   } else {
     pdfBtn = `<span class="hint" style="margin:0;" title="${FACILITY_NAMES[facility]}-toimipisteelle ei ole vielä omaa graafista pohjaa">📄 PDF ei vielä saatavilla ${FACILITY_NAMES[facility]}:lle</span>`;
   }
+  const dayRoles = facility === 'kesti'
+    ? ['soup', 'main', 'main2', 'main3', 'salad', 'sauce', 'veg_side', 'energy_side']
+    : ['soup', 'main', 'main2', 'main3', 'salad'];
   document.getElementById('planView').innerHTML = `
     <div class="card week-block">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:7px; flex-wrap:wrap; gap:8px;">
@@ -2652,11 +2770,13 @@ function renderWeek() {
       </div>
       <div id="menuFileBox" style="display:none; align-items:center; gap:10px; background:#eaf5ee;
                                     border:1px solid #b7dfc4; border-radius:6px; padding:10px 14px; margin-bottom:12px;"></div>
+      <div id="accessoryTray" style="display:flex; flex-wrap:wrap; align-items:center; margin-bottom:10px;"></div>
       <div class="meals">` + days.map(d => { const isMirrored = facility === 'hoiva' && d.day < 5; return `
-        <div class="day-block" style="margin-bottom:12px;">
+        <div class="day-block" style="margin-bottom:12px;"
+             ${facility === 'kesti' ? `ondragover="onDayDragOver(event)" ondragleave="onDayDragLeave(event)" ondrop="onDayDrop(event, ${d.day})"` : ''}>
           <div style="font-weight:bold; margin-bottom:4px;">${WEEKDAY_NAMES[d.day] ?? ('Päivä ' + d.day)}
             ${isMirrored ? '<span class="hint" style="font-weight:normal;" title="Aina sama kuin Kestin ruokalistalla — muokkaa siellä">🔗 Kestistä</span>' : ''}</div>` +
-          ['soup', 'main', 'main2', 'salad'].map(role => !d[role] ? '' : `
+          dayRoles.map(role => !d[role] ? '' : `
           <div class="meal" style="background:${CAT_COLORS[d[role].category]}33; border-left:5px solid ${CAT_COLORS[d[role].category]}; position:relative; ${isMirrored ? 'opacity:0.75;' : ''}">
             <div ${isMirrored ? '' : `onclick="openChange(${d.day}, '${role}', ${d[role].recipe_id}, '${d[role].name.replace(/'/g, "\\'")}')"`}>
               <div class="slot">${ROLE_LABELS[role]}</div>${d[role].name}
@@ -2664,8 +2784,15 @@ function renderWeek() {
             </div>
             ${role === 'main2' && !isMirrored ? `<button class="btn small secondary" style="position:absolute; top:6px; right:6px;"
                       onclick="event.stopPropagation(); removeSecondMain(${currentWeek}, ${d.day})" title="Poista toinen pääruoka">🗑</button>` : ''}
+            ${role === 'main3' && !isMirrored ? `<button class="btn small secondary" style="position:absolute; top:6px; right:6px;"
+                      onclick="event.stopPropagation(); removeThirdMain(${currentWeek}, ${d.day})" title="Poista kolmas pääruoka">🗑</button>` : ''}
+            ${ACCESSORY_ROLES[role] ? `<button class="btn small secondary" style="position:absolute; top:6px; right:6px;"
+                      onclick="event.stopPropagation(); removeAccessory(${currentWeek}, ${d.day}, '${role}')" title="Poista">🗑</button>` : ''}
           </div>`).join('') + (!d.main2 && !isMirrored ? `
-          <button class="btn small secondary" onclick="addSecondMain(${d.day})">+ 2. pääruoka</button>` : '') + (d.day === DESSERT_DAY_BY_FACILITY[facility] ? `
+          <button class="btn small secondary" onclick="addSecondMain(${d.day})">+ 2. pääruoka</button>` : '')
+          + (facility === 'kesti' && d.day === 4 && !d.main3 ? `
+          <button class="btn small secondary" onclick="addThirdMain(${d.day})" title="Vain Hoivan menuun, ei näy Kestin omassa menussa">+ 3. pääruoka (Hoivalle)</button>` : '')
+          + (d.day === DESSERT_DAY_BY_FACILITY[facility] ? `
           <div style="padding:8px; margin-top:6px; background:#f3e5f5; border-left:5px solid #9c27b0; border-radius:4px;">
             <div class="slot">🍰 Jälkiruoka (${WEEKDAY_NAMES[d.day].toLowerCase()})</div>
             <textarea id="dessert-${d.day}" placeholder="esim. Suklaapannacotta"
@@ -2673,6 +2800,10 @@ function renderWeek() {
             <button class="btn small secondary" style="margin-top:4px;" onclick="saveFridayDessert(${currentWeek}, ${d.day})">✓ Tallenna jälkiruoka</button>
           </div>` : '') + `
         </div>`; }).join('') + `</div></div>`;
+  if (facility === 'kesti') {
+    Object.keys(ACCESSORY_ROLES).forEach(role => { if (!accessoryTray[role]) rerollAccessory(role); });
+    renderAccessoryTray();
+  }
 }
 
 async function saveFridayDessert(week, day) {
@@ -2699,8 +2830,14 @@ function renderChangeRecipeOptions() {
     changeRecipeOptions.length ? `${matches.length} / ${changeRecipeOptions.length} vaihtoehtoa` : '';
 }
 
+function resetChangeModalChrome() {
+  document.getElementById('changeReasonBox').style.display = '';
+  document.getElementById('changeSubmitBtn').textContent = 'Vaihda';
+}
+
 async function openChange(day, role, recipeId, name) {
   changeCtx = { week: currentWeek, day, role };
+  resetChangeModalChrome();
   const mealType = ROLE_MEAL_TYPE[role];
   document.getElementById('changeCurrent').innerHTML =
     `Viikko <b>${currentWeek}</b>, ${WEEKDAY_NAMES[day] ?? day} — ${ROLE_LABELS[role]}: nykyinen ruoka <b>${name}</b>`;
@@ -2717,11 +2854,24 @@ async function submitChange() {
   const newId = document.getElementById('changeNewRecipe').value;
   if (!newId) { msg('Valitse uusi resepti', false); return; }
   try {
+    if (changeCtx.pickingAccessory) {
+      const role = changeCtx.pickingAccessory;
+      const picked = changeRecipeOptions.find(o => String(o.id) === String(newId));
+      accessoryTray[role] = { id: picked.id, name_fi: picked.name };
+      renderAccessoryTray();
+      closeModal(); msg(`${ROLE_LABELS[role]} valittu — raahaa se päivälle`);
+      return;
+    }
     if (changeCtx.addingSecondMain) {
       await api(`/api/plans/${currentPlanId}/second-main`, { method:'POST',
         headers:{'Content-Type':'application/json'},
         body: JSON.stringify({ week: changeCtx.week, day_of_week: changeCtx.day, recipe_id: newId })});
       closeModal(); msg('Toinen pääruoka lisätty');
+    } else if (changeCtx.addingThirdMain) {
+      await api(`/api/plans/${currentPlanId}/third-main`, { method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ week: changeCtx.week, day_of_week: changeCtx.day, recipe_id: newId })});
+      closeModal(); msg('Kolmas pääruoka lisätty (näkyy vain Hoivan menussa)');
     } else {
       await api(`/api/plans/${currentPlanId}/change_meal`, { method:'POST',
         headers:{'Content-Type':'application/json'},
@@ -2738,6 +2888,7 @@ async function submitChange() {
 
 async function addSecondMain(day) {
   changeCtx = { week: currentWeek, day, role: 'main2', addingSecondMain: true };
+  resetChangeModalChrome();
   document.getElementById('changeCurrent').innerHTML =
     `Viikko <b>${currentWeek}</b>, ${WEEKDAY_NAMES[day] ?? day} — lisää toinen pääruoka vaihtoehdoksi`;
   document.getElementById('changeRecipeSearch').value = '';
@@ -2750,6 +2901,29 @@ async function addSecondMain(day) {
 async function removeSecondMain(week, day) {
   try {
     await api(`/api/plans/${currentPlanId}/second-main`, { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ week, day_of_week: day, recipe_id: null })});
+    planData = await api('/api/plans/' + currentPlanId);
+    renderWeek();
+  } catch(e) { msg(e.message, false); }
+}
+
+async function addThirdMain(day) {
+  changeCtx = { week: currentWeek, day, role: 'main3', addingThirdMain: true };
+  resetChangeModalChrome();
+  document.getElementById('changeCurrent').innerHTML =
+    `Viikko <b>${currentWeek}</b>, ${WEEKDAY_NAMES[day] ?? day} — lisää kolmas pääruoka ` +
+    `(näkyy vain Hoivan menussa, ei Kestin omassa)`;
+  document.getElementById('changeRecipeSearch').value = '';
+  const mains = await api('/api/recipes').then(rs => rs.filter(r => r.recipe_type === 'pääruoka'));
+  changeRecipeOptions = mains.map(r => ({ id: r.id, name: r.name_fi }));
+  renderChangeRecipeOptions();
+  document.getElementById('changeModal').classList.add('open');
+}
+
+async function removeThirdMain(week, day) {
+  try {
+    await api(`/api/plans/${currentPlanId}/third-main`, { method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ week, day_of_week: day, recipe_id: null })});
     planData = await api('/api/plans/' + currentPlanId);

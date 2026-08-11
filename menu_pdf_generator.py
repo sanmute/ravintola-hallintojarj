@@ -246,15 +246,20 @@ def build_week_menu_pdf(meals, week_number, year, output_path, config=None):
         c.drawString(DAY_LABEL_X, PAGE_H - DAY_LABEL_BASELINES[i],
                      f'{day} {d.day}.{d.month}')
 
-    # Dish lines: soup / salad & buffet / main / sides
+    # Dish lines: soup / salad & buffet / main (& 2nd main, Friday only in
+    # practice — real Kesti menus join two mains with "&", e.g.
+    # "AURAJUUSTOPOSSUA & BROILERIN NUIJAT") / sides
     for i, d in enumerate(days):
         salad_line = _fmt_line(d['salad'])
         if salad_line and 'SALAATTIBUFFET' not in salad_line:
             salad_line += ' & SALAATTIBUFFET'
         elif not salad_line:
             salad_line = 'PÄIVÄN SALAATTI & SALAATTIBUFFET'
-        lines = [_fmt_line(d['soup']), salad_line,
-                 _fmt_line(d['main']), _fmt_line(d['sides'])]
+        main_line = _fmt_line(d['main'])
+        main2_line = _fmt_line(d.get('main2'))
+        if main_line and main2_line:
+            main_line = f"{main_line} & {main2_line}"
+        lines = [_fmt_line(d['soup']), salad_line, main_line, _fmt_line(d['sides'])]
         lines = [ln for ln in lines if ln]
         for j, line in enumerate(lines):
             y_top = BLOCK_TOPS[i] + j * LINE_GAP
@@ -475,8 +480,14 @@ def build_hoiva_menu_pdf(days, week_number, year, output_path, variant='tammikot
                           dessert_day=None, dessert_text=None):
     """Render one of the two real Hoiva-facing weekly menus.
 
-    days: list of 7 dicts {'main': meal-or-None, 'soup': meal-or-None},
-      Ma..Su in order — the generator's real per-weekday assignment.
+    days: list of 7 dicts {'main': meal-or-None, 'main2': meal-or-None,
+      'main3': meal-or-None, 'soup': meal-or-None}, Ma..Su in order — the
+      generator's real per-weekday assignment. main2/main3 (optional extra
+      main-course picks, added manually per day) are appended to the
+      main-course line when present. main3 in practice only ever appears
+      on Friday — it's Hoiva-exclusive content that happens to be stored
+      on Kesti's Friday row (since Hoiva's ma-pe mirrors Kesti live), which
+      is why Kesti's own menu never shows it even though this one does.
     dessert_day: 0-6 (Ma=0..Su=6) — which weekday gets the 3rd
       ('JÄLKIRUOKA') line. Only rendered on the 'asukas' variant, since
       the 'tammikoti' template has no dessert line on any day.
@@ -511,6 +522,10 @@ def build_hoiva_menu_pdf(days, week_number, year, output_path, variant='tammikot
     for i in range(7):
         day_info = days[i] if i < len(days) else {}
         main_line = _fmt_line(day_info.get('main')) or '(PÄÄRUOKA PUUTTUU)'
+        for extra_key in ('main2', 'main3'):
+            extra = day_info.get(extra_key)
+            if extra:
+                main_line = f"{main_line}, {_fmt_line(extra)}"
         soup_line = _fmt_line(day_info.get('soup')) or '(KEITTO PUUTTUU)'
         lines = [main_line, soup_line]
         if variant == 'asukas' and dessert_day == i:

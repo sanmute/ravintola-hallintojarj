@@ -217,7 +217,11 @@ init_order_catalog(app, DB_PATH)
 SEASONS = {'talvi': 'Talvi', 'kevät': 'Kevät', 'kesä': 'Kesä', 'syksy': 'Syksy', 'kaikki': 'Ympärivuotinen'}
 CATEGORIES = {'kala': 'Kala', 'kana': 'Kana', 'naudanliha': 'Liha', 'kasvis': 'Kasvis'}
 CATEGORY_COLORS = {'kala': '#4A90D9', 'kana': '#F5D547', 'naudanliha': '#D94A4A', 'kasvis': '#5CB85C'}
-RECIPE_TYPES = ('pääruoka', 'keitto', 'salaatti', 'leivonta', 'jälkiruoka')
+RECIPE_TYPES = ('pääruoka', 'keitto', 'salaatti', 'leivonta', 'jälkiruoka',
+                'kastike', 'kasvislisäke', 'energialisäke')
+# Nämä kolme koskevat VAIN Kestiä (ei Hoivaa, ei Kymenkartanoa) — vapaaehtoisia
+# lisäyksiä joita generaattori ei koskaan valitse itse, ks. ACCOMPANIMENT_CONFIG.
+KESTI_ONLY_RECIPE_TYPES = ('kastike', 'kasvislisäke', 'energialisäke')
 
 # ---- Tietoa-sivun kiinteät tiedot — täytä oikeat yhteystiedot ennen käyttöönottoa ----
 APP_VERSION = '1.0.0'
@@ -1577,7 +1581,10 @@ def create_plan():
     }})
 
 
-MEAL_ROLE_BY_TYPE = {'keitto': 'soup', 'salaatti': 'salad', 'lounas2': 'main2'}  # anything else ('lounas') -> main
+MEAL_ROLE_BY_TYPE = {'keitto': 'soup', 'salaatti': 'salad', 'lounas2': 'main2', 'lounas3': 'main3',
+                      'kastike': 'sauce', 'kasvislisäke': 'veg_side', 'energialisäke': 'energy_side'}  # anything else ('lounas') -> main
+ACCOMPANIMENT_ROLES = ('sauce', 'veg_side', 'energy_side')
+ACCOMPANIMENT_TYPE_BY_ROLE = {'sauce': 'kastike', 'veg_side': 'kasvislisäke', 'energy_side': 'energialisäke'}
 WEEKDAY_LABELS = ['Ma', 'Ti', 'Ke', 'To', 'Pe', 'La', 'Su']  # kesti käyttää vain 0-4, hoiva/kymenkartano 0-6
 # Mikä viikonpäivä (0=ma..6=su) saa jälkiruokarivin, toimipisteittäin.
 # Kesti: perjantai (oma pohja ei näytä sitä, mutta rivi tallennetaan silti).
@@ -1619,10 +1626,12 @@ def _effective_meal_plan_days(conn, plan_id, week=None):
     if not mirrors:
         return sorted(own_rows, key=lambda r: (r['week_number'], r['day_of_week']))
 
+    accompaniment_types = ','.join('?' * len(ACCOMPANIMENT_TYPE_BY_ROLE))
     mirrored_rows = conn.execute(
         f'''SELECT week_number, day_of_week, recipe_id, meal_type, dessert_text
-            FROM meal_plan_days WHERE meal_plan_id = ? AND day_of_week < 5 {week_clause}''',
-        (mirrors,) + week_params).fetchall()
+            FROM meal_plan_days WHERE meal_plan_id = ? AND day_of_week < 5
+                AND meal_type NOT IN ({accompaniment_types}) {week_clause}''',
+        (mirrors,) + tuple(ACCOMPANIMENT_TYPE_BY_ROLE.values()) + week_params).fetchall()
     own_weekend = [r for r in own_rows if r['day_of_week'] >= 5]
     return sorted(list(mirrored_rows) + own_weekend, key=lambda r: (r['week_number'], r['day_of_week']))
 
@@ -1646,7 +1655,8 @@ def get_plan(plan_id):
     conn.close()
 
     weeks_grouped = defaultdict(lambda: defaultdict(
-        lambda: {'day': None, 'main': None, 'main2': None, 'soup': None, 'salad': None, 'dessert_text': None}))
+        lambda: {'day': None, 'main': None, 'main2': None, 'main3': None, 'soup': None, 'salad': None,
+                 'sauce': None, 'veg_side': None, 'energy_side': None, 'dessert_text': None}))
     for r in day_rows:
         day_obj = weeks_grouped[r['week_number']][r['day_of_week']]
         day_obj['day'] = r['day_of_week']
@@ -1788,14 +1798,16 @@ def update_dessert(plan_id):
     return jsonify({'message': 'Jälkiruoka tallennettu'})
 
 
-@app.route('/api/plans/<int:plan_id>/second-main', methods=['POST'])
-def update_second_main(plan_id):
-    """Valinnainen toinen pääruoka yhdelle päivälle (esim. Kymenkartanon
-    ruokalistalla nähty kahden vaihtoehdon päivä) — ei jotain jonka
-    generaattori koskaan tekee automaattisesti, vaan esihenkilön käsin
-    lisäämä/poistama per päivä. Tallennetaan omana rivinään
-    meal_type='lounas2', normaalin 'lounas'-rivin rinnalle.
-    recipe_id=None (tai puuttuu) poistaa toisen pääruoan."""
+def _update_extra_main(plan_id, meal_type, label, require_kesti=False):
+    """Shared logic for an optional extra slot on one day (meal_type
+    'lounas2'/'lounas3', or one of the Kesti-only accompaniment types
+    'kastike'/'kasvislisäke'/'energialisäke') — not something the generator
+    ever assigns automatically, only added/removed by hand. Stored as its
+    own row alongside the always-present 'lounas' row. recipe_id=None (or
+    missing) removes it. require_kesti=True rejects the call outright if
+    the plan isn't Kesti's (these accompaniments must never exist on
+    Hoiva's/Kymenkartano's own rows — Hoiva only ever sees them via the
+    mirror of Kesti's data)."""
     data = request.json or {}
     try:
         week = _int_arg(data, 'week')
@@ -1805,18 +1817,23 @@ def update_second_main(plan_id):
     recipe_id = data.get('recipe_id')
 
     conn = get_db()
+    if require_kesti:
+        plan = conn.execute('SELECT facility FROM meal_plans WHERE id = ?', (plan_id,)).fetchone()
+        if not plan or (plan['facility'] or 'kesti') != 'kesti':
+            conn.close()
+            return jsonify({'error': f'{label} koskee vain Kestiä'}), 400
     mirror_err = _mirrored_day_error(conn, plan_id, day_of_week)
     if mirror_err:
         conn.close()
         return jsonify(mirror_err), 400
     if recipe_id in (None, ''):
         cur = conn.execute(
-            '''DELETE FROM meal_plan_days
-               WHERE meal_plan_id = ? AND week_number = ? AND day_of_week = ? AND meal_type = 'lounas2' ''',
+            f'''DELETE FROM meal_plan_days
+                WHERE meal_plan_id = ? AND week_number = ? AND day_of_week = ? AND meal_type = '{meal_type}' ''',
             (plan_id, week, day_of_week))
         conn.commit()
         conn.close()
-        return jsonify({'message': 'Toinen pääruoka poistettu', 'removed': cur.rowcount > 0})
+        return jsonify({'message': f'{label} poistettu', 'removed': cur.rowcount > 0})
 
     try:
         recipe_id = int(recipe_id)
@@ -1828,8 +1845,8 @@ def update_second_main(plan_id):
         return jsonify({'error': 'Reseptiä ei löydy'}), 404
 
     existing = conn.execute(
-        '''SELECT id FROM meal_plan_days
-           WHERE meal_plan_id = ? AND week_number = ? AND day_of_week = ? AND meal_type = 'lounas2' ''',
+        f'''SELECT id FROM meal_plan_days
+            WHERE meal_plan_id = ? AND week_number = ? AND day_of_week = ? AND meal_type = '{meal_type}' ''',
         (plan_id, week, day_of_week)).fetchone()
     if existing:
         conn.execute('UPDATE meal_plan_days SET recipe_id = ? WHERE id = ?', (recipe_id, existing['id']))
@@ -1842,12 +1859,66 @@ def update_second_main(plan_id):
             conn.close()
             return jsonify({'error': 'Päivää ei löytynyt tältä ruokalistalta'}), 404
         conn.execute(
-            '''INSERT INTO meal_plan_days (meal_plan_id, week_number, day_of_week, recipe_id, meal_type)
-               VALUES (?, ?, ?, ?, 'lounas2')''',
+            f'''INSERT INTO meal_plan_days (meal_plan_id, week_number, day_of_week, recipe_id, meal_type)
+                VALUES (?, ?, ?, ?, '{meal_type}')''',
             (plan_id, week, day_of_week, recipe_id))
     conn.commit()
     conn.close()
-    return jsonify({'message': 'Toinen pääruoka tallennettu'})
+    return jsonify({'message': f'{label} tallennettu'})
+
+
+@app.route('/api/plans/<int:plan_id>/second-main', methods=['POST'])
+def update_second_main(plan_id):
+    """Valinnainen toinen pääruoka yhdelle päivälle (esim. Kymenkartanon
+    ruokalistalla nähty kahden vaihtoehdon päivä)."""
+    return _update_extra_main(plan_id, 'lounas2', 'Toinen pääruoka')
+
+
+@app.route('/api/plans/<int:plan_id>/third-main', methods=['POST'])
+def update_third_main(plan_id):
+    """Valinnainen kolmas pääruoka — käytännössä vain Kestin perjantaille:
+    Kesti tarjoaa perjantaisin aina 2 pääruokaa (lounas + lounas2, molemmat
+    näkyvät Kestin omassa menussa), ja tämä kolmas rivi on Hoivaa varten —
+    Hoivan ma-pe peilaa Kestin dataa sellaisenaan, joten tallentamalla tämä
+    Kestin perjantairiville Hoiva saa sen automaattisesti mukaan omaan
+    menuunsa ilman että Hoiva tarvitsee mitään omaa dataa. Kestin omat
+    vientipohjat eivät koskaan näytä tätä riviä, vain Hoivan pohjat."""
+    return _update_extra_main(plan_id, 'lounas3', 'Kolmas pääruoka')
+
+
+@app.route('/api/plans/<int:plan_id>/sauce', methods=['POST'])
+def update_sauce(plan_id):
+    """Valinnainen kastike-lisäys yhdelle päivälle — koskee vain Kestiä."""
+    return _update_extra_main(plan_id, 'kastike', 'Kastike', require_kesti=True)
+
+
+@app.route('/api/plans/<int:plan_id>/veg-side', methods=['POST'])
+def update_veg_side(plan_id):
+    """Valinnainen kasvislisäke yhdelle päivälle — koskee vain Kestiä."""
+    return _update_extra_main(plan_id, 'kasvislisäke', 'Kasvislisäke', require_kesti=True)
+
+
+@app.route('/api/plans/<int:plan_id>/energy-side', methods=['POST'])
+def update_energy_side(plan_id):
+    """Valinnainen energialisäke yhdelle päivälle — koskee vain Kestiä."""
+    return _update_extra_main(plan_id, 'energialisäke', 'Energialisäke', require_kesti=True)
+
+
+@app.route('/api/recipes/random')
+def random_recipe():
+    """Return one random recipe of the given recipe_type, for the
+    drag-and-drop accompaniment tray's suggestion chips."""
+    recipe_type = request.args.get('recipe_type', '')
+    if recipe_type not in RECIPE_TYPES:
+        return jsonify({'error': 'Tuntematon reseptityyppi'}), 400
+    conn = get_db()
+    row = conn.execute(
+        'SELECT id, name_fi FROM recipes WHERE recipe_type = ? ORDER BY RANDOM() LIMIT 1',
+        (recipe_type,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({'error': 'Reseptejä ei löytynyt'}), 404
+    return jsonify({'id': row['id'], 'name_fi': row['name_fi']})
 
 
 @app.route('/api/plans/<int:plan_id>/suggestions')
@@ -1924,7 +1995,8 @@ def export_menu(plan_id):
     # Real per-weekday soup/main/salad, built directly from the generator's
     # own assignment — no name-pattern heuristics needed, the roles are
     # already known (meal_type: 'keitto'/'salaatti'/'lounas').
-    meals = [{'soup': None, 'main': None, 'main2': None, 'salad': None, 'sides': None} for _ in range(days_per_week)]
+    meals = [{'soup': None, 'main': None, 'main2': None, 'main3': None, 'salad': None, 'sides': None,
+             'sauce': None, 'veg_side': None, 'energy_side': None} for _ in range(days_per_week)]
     dessert_text = None
     for r in rows:
         weekday = r['day_of_week']
@@ -1936,12 +2008,28 @@ def export_menu(plan_id):
         if weekday == DESSERT_DAY_BY_FACILITY.get(facility) and r['dessert_text']:
             dessert_text = r['dessert_text']
 
+    if facility == 'kesti':
+        # Kesti's own menu never shows the 3rd main at all (it exists only
+        # so Hoiva's mirrored Friday can show it) — and shows the 2nd main
+        # only on Friday specifically, since Kesti always serves 2 mains
+        # that day; a main2 manually added to any other day stays hidden
+        # from Kesti's own menu (Hoiva still sees it via the live mirror).
+        for weekday, day_meals in enumerate(meals):
+            day_meals['main3'] = None
+            if weekday != 4:
+                day_meals['main2'] = None
+            extra_names = [day_meals[role]['name'] for role in ACCOMPANIMENT_ROLES if day_meals.get(role)]
+            day_meals['sides'] = {'name': f"LISÄKKEET: {', '.join(extra_names)}", 'notes': None} if extra_names else None
+
     if fmt == 'docx':
         try:
             from menu_generator import build_week_menu
         except ImportError:
             return jsonify({'error': 'python-docx-kirjasto puuttuu. Aja KAYNNISTA.bat uudelleen.'}), 500
         out = os.path.join(OUTPUT_DIR, f'viikkomenu_plan{plan_id}_vko{week}.docx')
+        # main2/main3 visibility is already decided above (per facility/day)
+        # by what's actually populated in `meals` — build_week_menu just
+        # renders whatever it's given.
         path, _ = build_week_menu(meals, week, year, out, day_names=WEEKDAY_LABELS[:days_per_week])
         download_name = f'viikkomenu_vko{week}.docx'
     elif facility == 'hoiva':
@@ -3485,7 +3573,8 @@ def health_integrity_check():
 
     bad_recipe_types = conn.execute(
         "SELECT COUNT(*) FROM recipes WHERE recipe_type NOT IN "
-        "('pääruoka','keitto','salaatti','leivonta','jälkiruoka')"
+        "('pääruoka','keitto','salaatti','leivonta','jälkiruoka',"
+        "'kastike','kasvislisäke','energialisäke')"
     ).fetchone()[0]
     if bad_recipe_types:
         errors.append(f'{bad_recipe_types} reseptillä on virheellinen recipe_type-arvo')

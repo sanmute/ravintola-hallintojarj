@@ -94,7 +94,8 @@ def _effective_recipe_ids(conn, plan_id, week):
     if not mirrors:
         return [r['recipe_id'] for r in own]
     mirrored = conn.execute(
-        'SELECT recipe_id FROM meal_plan_days WHERE meal_plan_id = ? AND week_number = ? AND day_of_week < 5',
+        "SELECT recipe_id FROM meal_plan_days WHERE meal_plan_id = ? AND week_number = ? AND day_of_week < 5 "
+        "AND meal_type NOT IN ('kastike','kasvislisäke','energialisäke')",
         (mirrors, week)).fetchall()
     return [r['recipe_id'] for r in mirrored] + [r['recipe_id'] for r in own if r['day_of_week'] >= 5]
 

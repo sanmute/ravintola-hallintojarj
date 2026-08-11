@@ -92,9 +92,14 @@ def build_week_menu(meals, week_number, year, output_path, day_names=None):
     meals: EITHER a flat list of dicts {'name':..., 'notes':..., 'category':...}
            (heuristic split: soups = name contains 'keitto', rest = mains;
            no real salad data, generic salad_line used)
-       OR   a list of day dicts {'soup','main','salad'} (each a meal dict or
-           None), one per weekday in order — the exact, real per-day
-           assignment, used as-is.
+       OR   a list of day dicts {'soup','main','main2','main3','salad'}
+           (each a meal dict or None), one per weekday in order — the
+           exact, real per-day assignment, used as-is. main2/main3 (extra
+           main-course picks for that day, added by hand) are appended to
+           the main-course line when present — callers decide per-facility
+           and per-day which of these keys are actually populated (e.g.
+           Kesti's own export clears main3 always and main2 on all but
+           Friday before calling this).
     day_names: weekday labels, one per day of `meals` — defaults to the
         5-day Ma-Pe list; pass a 7-item list (Ma..Su) for facilities that
         run Monday-Sunday (hoiva, kymenkartano).
@@ -173,10 +178,15 @@ def build_week_menu(meals, week_number, year, output_path, day_names=None):
                      if soup else '(KEITTO PUUTTUU)')
         main_line = (f"{main['name'].upper()} {extract_menu_codes(main.get('notes'))}".strip()
                      if main else '(PÄÄRUOKA PUUTTUU)')
+        for extra_key in ('main2', 'main3'):
+            if day_info.get(extra_key):
+                main_line = f"{main_line}, {day_info[extra_key]['name'].upper()}".strip()
         salad_line = (f"{salad['name'].upper()} & SALAATTIBUFFET" if salad
                      else MENU_CONFIG['salad_line'])
+        sides = day_info.get('sides')
+        sides_line = sides['name'].upper() if sides else MENU_CONFIG['sides_line']
 
-        lines = [soup_line, salad_line, main_line, MENU_CONFIG['sides_line']]
+        lines = [soup_line, salad_line, main_line, sides_line]
         first = True
         for line in lines:
             lp = dish_cell.paragraphs[0] if first else dish_cell.add_paragraph()

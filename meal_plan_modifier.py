@@ -283,10 +283,10 @@ class MealModifier:
 
             current_recipe_id = current[0]
 
-            if meal_type in ('keitto', 'salaatti'):
+            if meal_type in ('keitto', 'salaatti', 'kastike', 'kasvislisäke', 'energialisäke'):
                 role_recipe_type = meal_type
             else:
-                # 'lounas' or 'lounas2' — both are main-course slots.
+                # 'lounas', 'lounas2' or 'lounas3' — all main-course slots.
                 role_recipe_type = 'pääruoka'
             c.execute('''SELECT id, name_fi FROM recipes
                         WHERE recipe_type = ? AND id != ?

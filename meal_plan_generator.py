@@ -58,7 +58,7 @@ class MealPlanGenerator:
     # slot (bakery, dessert) — kept out of the mains pool at every split step,
     # since "mains" here really means "everything not yet claimed by a more
     # specific split" (soups are peeled off separately, in _split_soups).
-    _NON_MEAL_SLOT_TYPES = ('leivonta', 'jälkiruoka')
+    _NON_MEAL_SLOT_TYPES = ('leivonta', 'jälkiruoka', 'kastike', 'kasvislisäke', 'energialisäke')
 
     def _split_salads(self, recipe_pool):
         """Split a recipe pool into (mains, salads), using the explicit
