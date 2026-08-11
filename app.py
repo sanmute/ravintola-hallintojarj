@@ -1661,10 +1661,17 @@ def get_plan(plan_id):
         day_obj = weeks_grouped[r['week_number']][r['day_of_week']]
         day_obj['day'] = r['day_of_week']
         role = MEAL_ROLE_BY_TYPE.get(r['meal_type'], 'main')
-        rr = recipes_by_id.get(r['recipe_id'])
-        day_obj[role] = {'recipe_id': r['recipe_id'], 'name': rr['name_fi'] if rr else '?',
-                         'category': rr['dish_category'] if rr else None, 'meal_type': r['meal_type'],
-                         'has_ingredients': (rr['ingredient_count'] > 0) if rr else False}
+        if r['recipe_id'] is None:
+            # Slot was cleared by hand (see /clear_meal) — keep the row so it
+            # still occupies its place in the day and stays a drop target,
+            # but don't show it as a broken reference like a dangling '?'.
+            day_obj[role] = {'recipe_id': None, 'name': None, 'category': None,
+                             'meal_type': r['meal_type'], 'has_ingredients': True}
+        else:
+            rr = recipes_by_id.get(r['recipe_id'])
+            day_obj[role] = {'recipe_id': r['recipe_id'], 'name': rr['name_fi'] if rr else '?',
+                             'category': rr['dish_category'] if rr else None, 'meal_type': r['meal_type'],
+                             'has_ingredients': (rr['ingredient_count'] > 0) if rr else False}
         if role == 'main':
             day_obj['dessert_text'] = r['dessert_text']
 
@@ -1765,6 +1772,36 @@ def change_meal(plan_id):
     if not ok:
         return jsonify({'error': 'Vaihto epäonnistui'}), 400
     return jsonify({'message': 'Ateria vaihdettu'})
+
+
+@app.route('/api/plans/<int:plan_id>/clear_meal', methods=['POST'])
+def clear_meal(plan_id):
+    """Remove the recipe from a required slot (soup/main/salad), leaving it
+    empty rather than deleting the day's row — the slot stays a valid
+    drag/click target to fill in again later."""
+    data = request.json or {}
+    try:
+        week_number = _int_arg(data, 'week')
+        day_of_week = _int_arg(data, 'slot')
+    except _BadIntArg as e:
+        return jsonify({'error': e.message}), 400
+    conn = get_db()
+    mirror_err = _mirrored_day_error(conn, plan_id, day_of_week)
+    conn.close()
+    if mirror_err:
+        return jsonify(mirror_err), 400
+    modifier = MealModifier(DB_PATH)
+    ok = modifier.clear_meal(
+        meal_plan_id=plan_id,
+        week_number=week_number,
+        day_of_week=day_of_week,
+        meal_type=data.get('meal_type', 'lounas'),
+        reason=data.get('reason', 'Poistettu'),
+        modified_by=data.get('modified_by', 'käyttäjä')
+    )
+    if not ok:
+        return jsonify({'error': 'Poisto epäonnistui'}), 400
+    return jsonify({'message': 'Ateria poistettu'})
 
 
 @app.route('/api/plans/<int:plan_id>/dessert', methods=['POST'])
@@ -1976,7 +2013,9 @@ def export_menu(plan_id):
         return jsonify({'error': 'Ruokalistaa ei löydy'}), 404
     facility = plan['facility'] or 'kesti'
     days_per_week = FACILITY_DAYS_PER_WEEK.get(facility, 5)
-    day_rows = _effective_meal_plan_days(conn, plan_id, week=week)
+    # Käsin tyhjennetyt paikat (ks. /clear_meal) jätetään pois viennistä —
+    # niillä ei ole reseptiä johon viitata.
+    day_rows = [r for r in _effective_meal_plan_days(conn, plan_id, week=week) if r['recipe_id'] is not None]
     recipe_ids = list({r['recipe_id'] for r in day_rows})
     recipes_by_id = {}
     if recipe_ids:
@@ -2103,9 +2142,12 @@ def export_instructions_pdf(plan_id):
     if not plan:
         conn.close()
         return jsonify({'error': 'Ruokalistaa ei löydy'}), 404
+    _ensure_ingredient_editor_tables(conn)  # varmistaa recipe_ingredients.sort_order-sarakkeen olemassaolon
     facility = plan['facility'] or 'kesti'
     days_per_week = FACILITY_DAYS_PER_WEEK.get(facility, 5)
-    day_rows = _effective_meal_plan_days(conn, plan_id, week=week)
+    # Käsin tyhjennetyt paikat (ks. /clear_meal) jätetään pois viennistä —
+    # niillä ei ole reseptiä johon viitata.
+    day_rows = [r for r in _effective_meal_plan_days(conn, plan_id, week=week) if r['recipe_id'] is not None]
     recipe_ids = list({r['recipe_id'] for r in day_rows})
     recipes_by_id = {}
     ingredients_by_recipe = defaultdict(list)
@@ -2212,7 +2254,9 @@ def export_kespro(plan_id):
     # ma-pe recipes, not just Hoiva's own (la-su-only) rows. recipe_id_list
     # keeps duplicates (same recipe used on 2 different days that week
     # must be counted/ordered twice), distinct_ids is only for the lookups.
-    day_rows = _effective_meal_plan_days(conn, plan_id, week=week)
+    # Käsin tyhjennetyt paikat (ks. /clear_meal) jätetään pois tilauslistasta —
+    # niillä ei ole reseptiä johon viitata.
+    day_rows = [r for r in _effective_meal_plan_days(conn, plan_id, week=week) if r['recipe_id'] is not None]
     recipe_id_list = [r['recipe_id'] for r in day_rows]
     distinct_ids = list(set(recipe_id_list))
 

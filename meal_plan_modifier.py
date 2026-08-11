@@ -118,11 +118,15 @@ class MealModifier:
             
             conn.commit()
             
-            # Get recipe names for feedback
+            # Get recipe names for feedback. original_recipe_id can be None
+            # (slot was empty — see /clear_meal) — don't let a missing name
+            # here crash the whole call after the DB write already committed.
             old_recipe = self.db.get_recipe_details(original_recipe_id)
             new_recipe = self.db.get_recipe_details(new_recipe_id)
-            
-            print(f"✅ Changed: '{old_recipe['name']}' → '{new_recipe['name']}'")
+            old_name = old_recipe['name'] if old_recipe else '(tyhjä)'
+            new_name = new_recipe['name'] if new_recipe else '(tyhjä)'
+
+            print(f"✅ Changed: '{old_name}' → '{new_name}'")
             print(f"   Week {week_number}, Meal {day_of_week}")
             print(f"   Reason: {reason}")
             
@@ -134,7 +138,54 @@ class MealModifier:
         finally:
             conn.close()
     
-    def exclude_recipe(self, meal_plan_id, recipe_id, reason, 
+    def clear_meal(self, meal_plan_id, week_number, day_of_week,
+                   meal_type='lounas', reason="Poistettu", modified_by="admin"):
+        """Remove the recipe from a meal slot, leaving it empty. The row
+        itself is kept (recipe_id set to NULL) rather than deleted, so the
+        slot stays addressable for a later change_meal/drag-drop fill.
+
+        Returns:
+            True if successful, False otherwise
+        """
+
+        import sqlite3
+        conn = sqlite3.connect(self.db.db_path)
+        c = conn.cursor()
+
+        try:
+            c.execute('''SELECT recipe_id FROM meal_plan_days
+                        WHERE meal_plan_id = ? AND week_number = ? AND day_of_week = ? AND meal_type = ?''',
+                     (meal_plan_id, week_number, day_of_week, meal_type))
+            current = c.fetchone()
+
+            if not current:
+                print(f"❌ No meal found for plan {meal_plan_id}, week {week_number}, day {day_of_week}, type {meal_type}")
+                return False
+
+            original_recipe_id = current[0]
+
+            c.execute('''UPDATE meal_plan_days
+                        SET recipe_id = NULL
+                        WHERE meal_plan_id = ? AND week_number = ? AND day_of_week = ? AND meal_type = ?''',
+                     (meal_plan_id, week_number, day_of_week, meal_type))
+
+            c.execute('''INSERT INTO meal_modifications
+                        (meal_plan_id, week_number, day_of_week, original_recipe_id,
+                         new_recipe_id, reason, modified_by)
+                        VALUES (?, ?, ?, ?, NULL, ?, ?)''',
+                     (meal_plan_id, week_number, day_of_week, original_recipe_id,
+                      reason, modified_by))
+
+            conn.commit()
+            return True
+
+        except Exception as e:
+            print(f"❌ Error clearing meal: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def exclude_recipe(self, meal_plan_id, recipe_id, reason,
                       from_date=None, to_date=None):
         """
         Exclude a recipe from being used (supply shortage, etc.)
@@ -288,9 +339,17 @@ class MealModifier:
             else:
                 # 'lounas', 'lounas2' or 'lounas3' — all main-course slots.
                 role_recipe_type = 'pääruoka'
-            c.execute('''SELECT id, name_fi FROM recipes
-                        WHERE recipe_type = ? AND id != ?
-                        ORDER BY name_fi''', (role_recipe_type, current_recipe_id))
+            # current_recipe_id can be NULL (slot cleared via /clear_meal) —
+            # 'id != NULL' is never true in SQL, which would wipe out every
+            # suggestion, so only exclude it when there's something to exclude.
+            if current_recipe_id is not None:
+                c.execute('''SELECT id, name_fi FROM recipes
+                            WHERE recipe_type = ? AND id != ?
+                            ORDER BY name_fi''', (role_recipe_type, current_recipe_id))
+            else:
+                c.execute('''SELECT id, name_fi FROM recipes
+                            WHERE recipe_type = ?
+                            ORDER BY name_fi''', (role_recipe_type,))
 
             suggestions = c.fetchall()
 
@@ -328,8 +387,8 @@ class MealModifier:
             modifications.append({
                 'week': week,
                 'day': day,
-                'from': old_recipe['name'] if old_recipe else 'Unknown',
-                'to': new_recipe['name'] if new_recipe else 'Unknown',
+                'from': old_recipe['name'] if old_recipe else ('(tyhjä)' if old_id is None else 'Tuntematon'),
+                'to': new_recipe['name'] if new_recipe else ('(tyhjä)' if new_id is None else 'Tuntematon'),
                 'reason': reason,
                 'by': who,
                 'at': when

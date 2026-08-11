@@ -59,6 +59,12 @@
   .meal:hover { outline:2px solid #1a5c3a; }
   .meal .slot { font-size:10px; opacity:.65; font-weight:400; }
   .day-block.drag-over { outline:3px dashed #1a5c3a; border-radius:8px; }
+  .recipe-palette { width:230px; flex:0 0 230px; position:sticky; top:12px; max-height:calc(100vh - 24px); overflow-y:auto; }
+  .recipe-box { padding:7px 9px; background:#fff; border:1px solid #ddd; border-left:4px solid #999;
+                border-radius:5px; cursor:grab; font-size:12.5px; margin-bottom:5px; transition:box-shadow .15s; }
+  .recipe-box:hover { box-shadow:0 1px 5px rgba(0,0,0,.18); }
+  .recipe-box.dragging { opacity:.5; }
+  .meal.drop-target.drag-over { outline:2px solid #1a5c3a; background:#eaf5ee !important; }
   .accessory-chip:active { cursor:grabbing; }
   /* modal */
   .overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:50;
@@ -955,16 +961,37 @@ Kiehauta vesi. Lisää liemikuutiot..."></textarea>
     <div class="row">
       <div><label>Valitse ruokalista</label><select id="viewPlanSelect" onchange="loadPlanView()"></select></div>
     </div>
-    <p class="hint">💡 Klikkaa mitä tahansa ateriaa vaihtaaksesi sen — esim. toimitusongelmien sattuessa. Kaikki muutokset kirjataan lokiin.</p>
+    <p class="hint">💡 Raahaa resepti vasemmalta keiton/pääruoan/salaatin kohdalle vaihtaaksesi sen suoraan —
+      tai klikkaa ateriaa avataksesi hakuvalinnan. Kaikki muutokset kirjataan lokiin.</p>
     <div class="pagination" id="weekPager"></div>
   </div>
-  <div id="planView"></div>
-  <div class="card" id="historyCard" style="display:none;">
-    <h2>Muutosloki</h2>
-    <table>
-      <thead><tr><th>Aika</th><th>Viikko/Ateria</th><th>Vaihto</th><th>Syy</th><th>Tekijä</th></tr></thead>
-      <tbody id="historyRows"></tbody>
-    </table>
+  <div style="display:flex; gap:16px; align-items:flex-start;">
+    <div class="card recipe-palette" id="recipePalette">
+      <h3 style="margin-top:0;">🥘 Reseptit</h3>
+      <input id="paletteFilter" placeholder="🔍 Suodata…" oninput="renderRecipePalette()" style="margin-bottom:10px; width:100%;">
+      <div style="margin-bottom:1.5rem">
+        <h4 style="color:#2196F3; margin-bottom:0.4rem;">🍲 Keitot (<span id="soupCount">0</span>)</h4>
+        <div id="soup-palette"></div>
+      </div>
+      <div style="margin-bottom:1.5rem">
+        <h4 style="color:#FF9800; margin-bottom:0.4rem;">🍽️ Pääruoat (<span id="mainCount">0</span>)</h4>
+        <div id="main-palette"></div>
+      </div>
+      <div>
+        <h4 style="color:#4CAF50; margin-bottom:0.4rem;">🥗 Salatit (<span id="saladCount">0</span>)</h4>
+        <div id="salad-palette"></div>
+      </div>
+    </div>
+    <div style="flex:1; min-width:0;">
+      <div id="planView"></div>
+      <div class="card" id="historyCard" style="display:none;">
+        <h2>Muutosloki</h2>
+        <table>
+          <thead><tr><th>Aika</th><th>Viikko/Ateria</th><th>Vaihto</th><th>Syy</th><th>Tekijä</th></tr></thead>
+          <tbody id="historyRows"></tbody>
+        </table>
+      </div>
+    </div>
   </div>
 </div>
 </main>
@@ -1644,7 +1671,7 @@ function showTab(name, btn) {
   if (name === 'contribute') loadPending();
   if (name === 'scrape') pollScrape().catch(()=>{});
   if (name === 'plans') loadPlans();
-  if (name === 'view') loadPlanList();
+  if (name === 'view') { loadPlanList(); loadRecipePalette(); }
   if (name === 'hallinto') { loadBackups(); auditRecipesLoad(); loadIngredientList(); }
   if (name === 'about') loadAboutStats();
   if (name === 'health') healthLoadDashboard();
@@ -2639,6 +2666,93 @@ const ROLE_LABELS = { soup: 'Keitto', main: 'Pääruoka', main2: 'Pääruoka 2',
                       sauce: 'Kastike', veg_side: 'Kasvislisäke', energy_side: 'Energialisäke' };
 const ROLE_MEAL_TYPE = { soup: 'keitto', main: 'lounas', main2: 'lounas2', main3: 'lounas3', salad: 'salaatti',
                         sauce: 'kastike', veg_side: 'kasvislisäke', energy_side: 'energialisäke' };
+// Mitä recipes.recipe_type-arvoa kunkin roolin paikalle saa raahata (reseptipaletti).
+const ROLE_RECIPE_TYPE = { soup: 'keitto', main: 'pääruoka', salad: 'salaatti' };
+
+// ---------- Reseptipaletti (raahattavat reseptilaatikot Selaa & muokkaa -välilehdellä) ----------
+let paletteRecipes = [];
+
+async function loadRecipePalette() {
+  try {
+    paletteRecipes = await api('/api/recipes');
+  } catch (e) {
+    msg('Virhe reseptien lataamisessa: ' + e.message, false);
+    return;
+  }
+  renderRecipePalette();
+}
+
+function renderRecipePalette() {
+  const q = document.getElementById('paletteFilter').value.trim().toLowerCase();
+  const groups = { keitto: 'soup-palette', 'pääruoka': 'main-palette', salaatti: 'salad-palette' };
+  const counts = { keitto: 'soupCount', 'pääruoka': 'mainCount', salaatti: 'saladCount' };
+  for (const [type, elId] of Object.entries(groups)) {
+    const recipes = paletteRecipes.filter(r => r.recipe_type === type &&
+      (!q || r.name_fi.toLowerCase().includes(q)));
+    document.getElementById(elId).innerHTML = recipes.map(r => `
+      <div class="recipe-box" draggable="true"
+           ondragstart="onPaletteDragStart(event, ${r.id}, '${r.name_fi.replace(/'/g, "\\'")}', '${type}')"
+           ondragend="onPaletteDragEnd(event)"
+           style="border-left-color:${RECIPE_TYPE_COLORS[type]}">${r.name_fi}</div>
+    `).join('') || '<div class="hint" style="margin:0;">Ei osumia</div>';
+    document.getElementById(counts[type]).textContent = recipes.length;
+  }
+}
+
+function onPaletteDragStart(ev, id, name, recipeType) {
+  ev.target.classList.add('dragging');
+  ev.dataTransfer.effectAllowed = 'copy';
+  ev.dataTransfer.setData('application/json', JSON.stringify({ id, name, recipeType }));
+}
+
+function onPaletteDragEnd(ev) {
+  ev.target.classList.remove('dragging');
+}
+
+function onMealDragOver(ev) {
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = 'copy';
+  ev.currentTarget.classList.add('drag-over');
+}
+
+function onMealDragLeave(ev) {
+  ev.currentTarget.classList.remove('drag-over');
+}
+
+async function onMealDrop(ev, day, role) {
+  ev.preventDefault();
+  ev.currentTarget.classList.remove('drag-over');
+  ev.currentTarget.closest('.day-block')?.classList.remove('drag-over');
+  let payload;
+  try { payload = JSON.parse(ev.dataTransfer.getData('application/json')); } catch (e) { return; }
+  if (!payload || !payload.recipeType) return;  // not a palette recipe drag (e.g. accessory chip) — let it bubble
+  ev.stopPropagation();
+  if (payload.recipeType !== ROLE_RECIPE_TYPE[role]) {
+    msg(`❌ ${RECIPE_TYPE_LABELS[payload.recipeType] || payload.recipeType} ei sovi ${ROLE_LABELS[role].toLowerCase()}-paikalle`, false);
+    return;
+  }
+  try {
+    await api(`/api/plans/${currentPlanId}/change_meal`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ week: currentWeek, slot: day, meal_type: ROLE_MEAL_TYPE[role], new_recipe_id: payload.id }) });
+    msg(`✓ ${ROLE_LABELS[role]} vaihdettu: ${payload.name}`, true);
+    planData = await api('/api/plans/' + currentPlanId);
+    renderWeek(); loadHistory();
+  } catch (e) { msg(e.message, false); }
+}
+
+async function deleteMeal(day, role, name) {
+  if (!confirm(`Poista ${ROLE_LABELS[role].toLowerCase()} "${name}" tältä päivältä?\n\nPaikka jää tyhjäksi, kunnes raahaat tai valitset sille uuden reseptin.`)) return;
+  try {
+    await api(`/api/plans/${currentPlanId}/clear_meal`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ week: currentWeek, slot: day, meal_type: ROLE_MEAL_TYPE[role] }) });
+    msg(`✓ ${ROLE_LABELS[role]} poistettu`, true);
+    planData = await api('/api/plans/' + currentPlanId);
+    renderWeek(); loadHistory();
+  } catch (e) { msg(e.message, false); }
+}
+
 // Kestin vapaaehtoiset lisäykset (raahaa reseptikorttia päivälaatikkoon) —
 // koskee VAIN Kestiä, ei Hoivaa eikä Kymenkartanoa.
 const ACCESSORY_ROLES = { sauce: { endpoint: 'sauce', icon: '🥣' },
@@ -2739,7 +2853,7 @@ async function removeAccessory(week, day, role) {
 
 function renderWeek() {
   const days = planData.weeks[currentWeek] || [];
-  const totalMeals = days.reduce((n, d) => n + ['soup', 'main', 'main2', 'main3', 'salad'].filter(r => d[r]).length, 0);
+  const totalMeals = days.reduce((n, d) => n + ['soup', 'main', 'main2', 'main3', 'salad'].filter(r => d[r] && d[r].recipe_id != null).length, 0);
   const facility = planData.facility || 'kesti';
   // Hoiva saa kaksi eri pohjaa (Tammikoti & Jyränköläkoti / Palvelutalon
   // asukas) samasta viikosta; Kymenkartanolla on oma pohjansa.
@@ -2776,19 +2890,27 @@ function renderWeek() {
              ${facility === 'kesti' ? `ondragover="onDayDragOver(event)" ondragleave="onDayDragLeave(event)" ondrop="onDayDrop(event, ${d.day})"` : ''}>
           <div style="font-weight:bold; margin-bottom:4px;">${WEEKDAY_NAMES[d.day] ?? ('Päivä ' + d.day)}
             ${isMirrored ? '<span class="hint" style="font-weight:normal;" title="Aina sama kuin Kestin ruokalistalla — muokkaa siellä">🔗 Kestistä</span>' : ''}</div>` +
-          dayRoles.map(role => !d[role] ? '' : `
-          <div class="meal" style="background:${CAT_COLORS[d[role].category]}33; border-left:5px solid ${CAT_COLORS[d[role].category]}; position:relative; ${isMirrored ? 'opacity:0.75;' : ''}">
-            <div ${isMirrored ? '' : `onclick="openChange(${d.day}, '${role}', ${d[role].recipe_id}, '${d[role].name.replace(/'/g, "\\'")}')"`}>
-              <div class="slot">${ROLE_LABELS[role]}</div>${d[role].name}
-              ${!d[role].has_ingredients ? '<span style="color:#c0392b; font-weight:600; margin-left:6px;" title="Reseptillä ei ole raaka-aineita">⚠️ Ei raaka-aineita</span>' : ''}
+          dayRoles.map(role => {
+            if (!d[role]) return '';
+            const isCore = !!ROLE_RECIPE_TYPE[role];  // soup/main/salad — always-present row, drag/click/delete target
+            const empty = d[role].recipe_id == null;
+            const safeName = d[role].name ? d[role].name.replace(/'/g, "\\'") : '(tyhjä)';
+            return `
+          <div class="meal ${!isMirrored && isCore ? 'drop-target' : ''}" style="background:${empty ? 'transparent' : CAT_COLORS[d[role].category]+'33'}; border-left:5px ${empty ? 'dashed #bbb' : 'solid ' + CAT_COLORS[d[role].category]}; position:relative; ${isMirrored ? 'opacity:0.75;' : ''}"
+               ${!isMirrored && isCore ? `ondragover="onMealDragOver(event)" ondragleave="onMealDragLeave(event)" ondrop="onMealDrop(event, ${d.day}, '${role}')"` : ''}>
+            <div ${isMirrored ? '' : `onclick="openChange(${d.day}, '${role}', ${d[role].recipe_id}, '${safeName}')"`}>
+              <div class="slot">${ROLE_LABELS[role]}</div>${empty ? '<span class="hint" style="font-style:italic; margin:0;">— tyhjä, raahaa tai klikkaa täyttääksesi —</span>' : d[role].name}
+              ${!empty && !d[role].has_ingredients ? '<span style="color:#c0392b; font-weight:600; margin-left:6px;" title="Reseptillä ei ole raaka-aineita">⚠️ Ei raaka-aineita</span>' : ''}
             </div>
+            ${!empty && isCore && !isMirrored ? `<button class="btn small secondary" style="position:absolute; top:6px; right:6px;"
+                      onclick="event.stopPropagation(); deleteMeal(${d.day}, '${role}', '${safeName}')" title="Poista">🗑</button>` : ''}
             ${role === 'main2' && !isMirrored ? `<button class="btn small secondary" style="position:absolute; top:6px; right:6px;"
                       onclick="event.stopPropagation(); removeSecondMain(${currentWeek}, ${d.day})" title="Poista toinen pääruoka">🗑</button>` : ''}
             ${role === 'main3' && !isMirrored ? `<button class="btn small secondary" style="position:absolute; top:6px; right:6px;"
                       onclick="event.stopPropagation(); removeThirdMain(${currentWeek}, ${d.day})" title="Poista kolmas pääruoka">🗑</button>` : ''}
             ${ACCESSORY_ROLES[role] ? `<button class="btn small secondary" style="position:absolute; top:6px; right:6px;"
                       onclick="event.stopPropagation(); removeAccessory(${currentWeek}, ${d.day}, '${role}')" title="Poista">🗑</button>` : ''}
-          </div>`).join('') + (!d.main2 && !isMirrored ? `
+          </div>`; }).join('') + (!d.main2 && !isMirrored ? `
           <button class="btn small secondary" onclick="addSecondMain(${d.day})">+ 2. pääruoka</button>` : '')
           + (facility === 'kesti' && d.day === 4 && !d.main3 ? `
           <button class="btn small secondary" onclick="addThirdMain(${d.day})" title="Vain Hoivan menuun, ei näy Kestin omassa menussa">+ 3. pääruoka (Hoivalle)</button>` : '')
